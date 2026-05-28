@@ -77,6 +77,14 @@ function parseAmazonSearch(html) {
   const $ = cheerio.load(html);
   const products = [];
 
+  // デバッグ: 商品カード数と先頭 HTML を記録
+  const dbgItems = $('[data-component-type="s-search-result"]');
+  const dbgAsins = $('[data-asin]');
+  console.log(`  [DEBUG Amazon検索] s-search-result: ${dbgItems.length} / [data-asin]: ${dbgAsins.length}`);
+  if (dbgItems.length === 0) {
+    console.log(`  [DEBUG HTML先頭300文字]\n${html.slice(0, 300)}`);
+  }
+
   $('[data-component-type="s-search-result"][data-asin]').each((_, el) => {
     const asin = $(el).attr('data-asin');
     if (!asin) return;
@@ -127,6 +135,12 @@ const AMAZON_BSR_URL = 'https://www.amazon.co.jp/gp/bestsellers/electronics/';
 function parseAmazonBSR(html) {
   const $ = cheerio.load(html);
   const products = [];
+
+  // デバッグ
+  const dbgA = $('[data-asin]').length;
+  const dbgLinks = $('a[href*="/dp/"]').length;
+  console.log(`  [DEBUG Amazon BSR] [data-asin]: ${dbgA} / /dp/ リンク: ${dbgLinks}`);
+  if (dbgA === 0) console.log(`  [DEBUG HTML先頭300文字]\n${html.slice(0, 300)}`);
 
   $('[data-asin]').each((_, el) => {
     const asin = $(el).attr('data-asin');
