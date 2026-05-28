@@ -13,30 +13,32 @@ function getClient() {
 }
 
 function buildTweetText(product) {
-  const title = product.title.length > 45
-    ? product.title.slice(0, 45) + '…'
+  const title = product.title.length > 50
+    ? product.title.slice(0, 50) + '…'
     : product.title;
 
-  const currentStr = product.currentPrice
-    ? `¥${product.currentPrice.toLocaleString()}`
-    : '価格を確認';
-  const origStr = product.originalPrice
-    ? `¥${product.originalPrice.toLocaleString()}`
-    : '';
+  // 価格表示：定価→現在値（割引率）
+  let priceLine;
+  if (product.currentPrice && product.originalPrice) {
+    priceLine =
+      `¥${product.originalPrice.toLocaleString()} → ` +
+      `¥${product.currentPrice.toLocaleString()}（${product.discountRate}%OFF）`;
+  } else if (product.currentPrice) {
+    priceLine = `¥${product.currentPrice.toLocaleString()}（${product.discountRate}%OFF）`;
+  } else {
+    priceLine = `${product.discountRate}%OFF 🎉`;
+  }
 
-  const priceLine = origStr
-    ? `定価 ${origStr} → 今だけ ${currentStr}`
-    : `価格 ${currentStr}`;
-
-  const commentLine = product.comment ? `💬 ${product.comment}\n\n` : '';
+  const commentLine = product.comment ? `${product.comment}\n\n` : '';
 
   return (
-    `🔥 ${product.discountRate}%OFF【Amazon激安ガジェット】\n\n` +
-    `${title}\n\n` +
+    `【🔥ガジェットセール】\n` +
+    `${title}\n` +
+    `${priceLine}\n\n` +
     `${commentLine}` +
-    `${priceLine}\n` +
-    `🛒 ${product.url}\n\n` +
-    `#ガジェット #Amazon激安 #セール #お得`
+    `👇 Amazonで見る\n` +
+    `${product.url}\n\n` +
+    `#Amazon #ガジェット #セール #広告`
   );
 }
 
