@@ -15,6 +15,7 @@
     "axios": "^1.7.0",
     "cheerio": "^1.0.0",
     "dotenv": "^17.4.2",
+    "iconv-lite": "^0.7.2",
     "twitter-api-v2": "^1.29.0"
   }
 }

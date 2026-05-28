@@ -9,6 +9,7 @@
 require('dotenv').config();
 const axios   = require('axios');
 const cheerio = require('cheerio');
+const iconv   = require('iconv-lite');
 
 // ── ブラウザ偽装ヘッダー（brotli除外でCI環境のデコードエラーを防ぐ）─
 const HEADERS = {
@@ -47,26 +48,57 @@ function extractAsin(url) {
   return m ? m[1] : null;
 }
 
+/** URL エンコード済み文字列から ASIN を抽出 */
+function extractAsinEncoded(str) {
+  if (!str) return null;
+  // dp%2F または dp%252F (二重エンコード)
+  const m = str.match(/dp(?:%252F|%2F)([A-Z0-9]{10})/i);
+  return m ? m[1] : null;
+}
+
 /** ASIN → Amazon アフィリエイトURL（amzn.to 短縮なし、dp形式固定）*/
 function makeAmazonUrl(asin) {
   const tag = process.env.AMAZON_ASSOCIATE_TAG || '';
   return `https://www.amazon.co.jp/dp/${asin}${tag ? '?tag=' + tag : ''}`;
 }
 
-// ── 汎用フェッチ（指数バックオフリトライ付き）───────────────────
+// ── 文字コード検出（Content-Type ヘッダー or <meta charset>）───────
+function detectCharset(contentType, buffer) {
+  // 1. Content-Type ヘッダーから
+  if (contentType) {
+    const m = contentType.match(/charset=([^\s;]+)/i);
+    if (m) return m[1].toLowerCase().replace('_', '-');
+  }
+  // 2. HTML 先頭 2000バイトの <meta charset> から
+  const head = buffer.slice(0, 2000).toString('ascii');
+  const m2 = head.match(/charset=["']?([^"';\s>]+)/i);
+  if (m2) return m2[1].toLowerCase().replace('_', '-');
+  // 3. デフォルトは UTF-8
+  return 'utf-8';
+}
+
+// ── 汎用フェッチ（Shift-JIS対応 + 指数バックオフリトライ付き）─────
 async function fetchHtml(url, referer, attempt = 1) {
   try {
     const res = await axios.get(url, {
-      headers:    { ...HEADERS, Referer: referer },
-      timeout:    25000,
-      decompress: true,
+      headers:      { ...HEADERS, Referer: referer },
+      timeout:      25000,
+      decompress:   true,
       maxRedirects: 5,
+      responseType: 'arraybuffer',   // バイナリで受け取る
     });
-    if (typeof res.data !== 'string') {
-      console.warn(`  [FETCH] 非テキストレスポンス: ${url.slice(0, 70)}`);
+
+    const buffer      = Buffer.from(res.data);
+    const contentType = res.headers['content-type'] || '';
+    const charset     = detectCharset(contentType, buffer);
+
+    // iconv-lite で正しいエンコーディングにデコード
+    const decoded = iconv.decode(buffer, charset);
+    if (typeof decoded !== 'string' || decoded.length === 0) {
+      console.warn(`  [FETCH] デコード失敗: ${url.slice(0, 70)}`);
       return null;
     }
-    return res.data;
+    return decoded;
   } catch (err) {
     const status = err.response?.status;
     if ((status === 503 || status === 429) && attempt <= 3) {
@@ -138,7 +170,7 @@ async function discoverProducts() {
     if (!html) continue;
 
     const links = extractProductLinks(html, label);
-    if (links.length >= 8) {
+    if (links.length >= 3) {   // 値下がりページは件数が少ないので閾値を下げる
       // ヒント割引率の高い順に並べ替え（既に判明しているもの優先）
       links.sort((a, b) => (b.hintDiscount || 0) - (a.hintDiscount || 0));
       return links;
@@ -151,6 +183,20 @@ async function discoverProducts() {
 // ══════════════════════════════════════════════════════════════
 // STEP 2 ─ 価格.com 商品詳細ページから価格・ASIN を取得
 // ══════════════════════════════════════════════════════════════
+
+/**
+ * テキスト or href から ASIN を探す共通ヘルパー
+ */
+function findAsinInStr(str) {
+  if (!str) return null;
+  // 直接 amazon.co.jp/dp/XXXXXXXXXX
+  let m = str.match(/amazon\.co\.jp\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+  if (m) return m[1];
+  // URL エンコード済み: dp%2F or dp%252F
+  m = str.match(/dp(?:%252F|%2F)([A-Z0-9]{10})/i);
+  if (m) return m[1];
+  return null;
+}
 
 /**
  * 価格.com の商品詳細ページを解析して以下を返す:
@@ -200,33 +246,71 @@ async function fetchKakakuDetail(kakakuUrl) {
   }
 
   // ── Amazon ASIN ──
-  // 価格.com のショップリンクは s.kakaku.com/jump/?...&url=https%3A%2F%2Fwww.amazon.co.jp%2Fdp%2FXXXXXXXXXX 形式
+  // 価格.com のショップリンクは href / onclick / data-* いずれかに埋め込まれている
   let asin = null;
 
+  // 1. href 属性（直接 or url= パラメータ）
   $('a').each((_, el) => {
+    if (asin) return false;
     const href = $(el).attr('href') || '';
 
     // 直接 Amazon URL
-    const direct = extractAsin(href);
+    const direct = findAsinInStr(href);
     if (direct) { asin = direct; return false; }
 
     // リダイレクト URL に url= パラメータが含まれる場合
     if (href.includes('url=')) {
       try {
-        const base   = href.startsWith('http') ? href : `https://kakaku.com${href}`;
+        const base     = href.startsWith('http') ? href : `https://kakaku.com${href}`;
         const urlParam = new URL(base).searchParams.get('url') || '';
-        const m = urlParam.match(/\/dp\/([A-Z0-9]{10})/i);
-        if (m) { asin = m[1]; return false; }
+        const found    = findAsinInStr(urlParam);
+        if (found) { asin = found; return false; }
       } catch (_) { /* ignore parse error */ }
-      // URL エンコードされた /dp%2F 形式
-      const rawm = href.match(/dp%2F([A-Z0-9]{10})/i);
-      if (rawm) { asin = rawm[1]; return false; }
+      // URL エンコードがネストしている場合も findAsinInStr でカバー済み
+      const encoded = findAsinInStr(href);
+      if (encoded) { asin = encoded; return false; }
     }
   });
 
-  // HTML 全体から正規表現で検索（最終手段）
+  // 2. onclick 属性（価格.com は jumpToShop() に URL を埋め込む）
   if (!asin) {
-    const m = $.html().match(/amazon\.co\.jp\/dp\/([A-Z0-9]{10})/i);
+    $('[onclick]').each((_, el) => {
+      if (asin) return false;
+      const onclick = $(el).attr('onclick') || '';
+      const found   = findAsinInStr(onclick);
+      if (found) { asin = found; return false; }
+      // onclick 内の URL デコード試行
+      try {
+        const decoded = decodeURIComponent(onclick);
+        const f2 = findAsinInStr(decoded);
+        if (f2) { asin = f2; return false; }
+      } catch (_) { /* ignore */ }
+    });
+  }
+
+  // 3. data-* 属性
+  if (!asin) {
+    $('[data-url],[data-href],[data-link]').each((_, el) => {
+      if (asin) return false;
+      for (const attr of ['data-url', 'data-href', 'data-link']) {
+        const val = $(el).attr(attr) || '';
+        const found = findAsinInStr(val);
+        if (found) { asin = found; return false; }
+      }
+    });
+  }
+
+  // 4. HTML 全体から正規表現で検索（最終手段）
+  if (!asin) {
+    const fullHtml = $.html();
+    const m = fullHtml.match(/amazon\.co\.jp\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+    if (m) asin = m[1];
+  }
+
+  // 5. HTML 全体の URL エンコード済みパターン（最終手段 その2）
+  if (!asin) {
+    const fullHtml = $.html();
+    const m = fullHtml.match(/dp(?:%252F|%2F)([A-Z0-9]{10})/i);
     if (m) asin = m[1];
   }
 
