@@ -2,12 +2,12 @@
  * scraper.js  ─  価格.com 売れ筋ランキング × 値下がり情報から
  *                Amazon アフィリエイトリンク（ASIN形式）を付与して返す
  *
- * 品質フィルタ:
- *   1. 価格.com IT家電ランキング 上位300位以内
- *   2. 値下がり率 30% 以上
- *   3. Amazon レビュー件数 100件以上（取得できた場合のみ適用）
+ * 品質フィルタ（必須）:
+ *   1. 値下がり率 30% 以上
+ *   2. Amazon レビュー件数 100件以上（取得できた場合のみ適用）
  *
- * スコアリング: (301 - rankPosition) × discountRate の降順
+ * スコアリング: discountRate × (1 + rankBonus)
+ *   ランキング上位ほど加点（rank1=最大2倍）、ランク外はベーススコアのみ
  *
  * 将来 PA-API が使えるようになったらこのファイルだけ差し替える。
  * 返却する product オブジェクト:
@@ -207,14 +207,20 @@ const PRICEDOWN_URLS = [
 ];
 
 async function discoverPricedownCandidates() {
+  const allLinks = [];
+  const seenIds  = new Set();
+
   for (const { url, label } of PRICEDOWN_URLS) {
     const html = await fetchHtml(url, 'https://kakaku.com/');
     if (!html) { await sleep(1000); continue; }
-    const links = extractProductLinks(html, label);
-    if (links.length >= 3) return links;
+    for (const link of extractProductLinks(html, label)) {
+      const id = link.kakakuUrl.match(/\/item\/([A-Z]\d{10})\//i)?.[1];
+      if (id && !seenIds.has(id)) { seenIds.add(id); allLinks.push(link); }
+    }
     await sleep(1000);
   }
-  return [];
+  console.log(`  [pricedown] 合計 ${allLinks.length} 件`);
+  return allLinks;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -428,22 +434,33 @@ async function scrapeProducts() {
     }
   }
 
-  // ④ 並べ替え: 順位昇順（1位が先）、同順位なら割引ヒントが高い方優先
+  // ④ 並べ替え:
+  //    1. 割引ヒント 30%以上 → 通過可能性が高いので最優先
+  //    2. その他割引ヒントあり → 次優先
+  //    3. ランキング上位順
+  //    4. 割引ヒントなし・ランク外 → 最後
   allCandidates.sort((a, b) => {
+    const dA = a.hintDiscount ?? 0;
+    const dB = b.hintDiscount ?? 0;
+    const highA = dA >= 30 ? 2 : dA > 0 ? 1 : 0;
+    const highB = dB >= 30 ? 2 : dB > 0 ? 1 : 0;
+    if (highA !== highB) return highB - highA;              // 割引ヒント優先
     const rA = a.rankPosition ?? 9999;
     const rB = b.rankPosition ?? 9999;
-    if (rA !== rB) return rA - rB;
-    return (b.hintDiscount ?? 0) - (a.hintDiscount ?? 0);
+    if (rA !== rB) return rA - rB;                          // ランキング順
+    return dB - dA;                                         // 割引率降順
   });
 
-  const inRankCount = allCandidates.filter(c => c.rankPosition !== null && c.rankPosition <= 300).length;
-  console.log(`\n  候補合計: ${allCandidates.length}件 (ランキング300位内: ${inRankCount}件)`);
+  const inRankCount = allCandidates.filter(c => c.rankPosition !== null).length;
+  console.log(`\n  候補合計: ${allCandidates.length}件 (ランキング圏内: ${inRankCount}件)`);
 
-  // ── ⑤ 詳細取得 + 3段階フィルタリング（最大30件調査）──
-  console.log('\n  ▶ 詳細取得・品質フィルタリング中 (最大30件)...');
+  // ── ⑤ 詳細取得 + フィルタリング（最大50件調査）──
+  // 必須: 値下がり率30%以上 / Amazon レビュー100件以上（取得できた場合）
+  // 加点: ランキング上位ほどスコアが高くなる（必須条件ではない）
+  console.log('\n  ▶ 詳細取得・品質フィルタリング中 (最大50件)...');
   const products = [];
 
-  for (const { kakakuUrl, hintTitle, hintPrice, hintDiscount, rankPosition } of allCandidates.slice(0, 30)) {
+  for (const { kakakuUrl, hintTitle, hintPrice, hintDiscount, rankPosition } of allCandidates.slice(0, 50)) {
     await sleep(1200);
 
     const label  = (hintTitle || '').slice(0, 35) || kakakuUrl.slice(-25);
@@ -455,20 +472,14 @@ async function scrapeProducts() {
       continue;
     }
 
-    // フィルタ①: 値下がり率 30% 以上
+    // 必須フィルタ①: 値下がり率 30% 以上
     const discountRate = detail.discountRate ?? hintDiscount;
     if (!discountRate || discountRate < 30) {
       console.log(`  ○ 割引${discountRate ?? '?'}% < 30%: ${detail.title.slice(0, 30)}`);
       continue;
     }
 
-    // フィルタ②: ランキング300位以内（ランク外アイテムはフォールバックとして通す）
-    if (rankPosition !== null && rankPosition > 300) {
-      console.log(`  ○ ランク${rankPosition}位 > 300: ${detail.title.slice(0, 30)}`);
-      continue;
-    }
-
-    // フィルタ③: Amazon レビュー件数 100件以上（取得できた場合のみ適用）
+    // 必須フィルタ②: Amazon レビュー件数 100件以上（取得できた場合のみ適用）
     let reviewCount = null, rating = null;
     const amazonData = await fetchAmazonReviewData(detail.asin);
     if (amazonData) {
@@ -480,10 +491,12 @@ async function scrapeProducts() {
       }
     }
 
-    // スコア = (301 - rank) × discountRate
-    // ランク外は rank=300 扱いで低スコアのフォールバック
-    const effectiveRank = rankPosition ?? 300;
-    const score = (301 - Math.min(effectiveRank, 300)) * discountRate;
+    // スコア計算: 値下がり率 × ランキング加点
+    // ランク1位: discountRate × 2.0（最大2倍）
+    // ランク300位: discountRate × 1.003
+    // ランク外: discountRate × 1.0（ベーススコアのみ）
+    const rankBonus = rankPosition ? (301 - Math.min(rankPosition, 300)) / 300 : 0;
+    const score     = Math.round(discountRate * (1 + rankBonus));
 
     const rankStr   = rankPosition ? `${rankPosition}位` : 'ランク外';
     const reviewStr = reviewCount  ? `${reviewCount}件`  : '未取得';
@@ -510,9 +523,9 @@ async function scrapeProducts() {
     if (products.length >= 10) break;
   }
 
-  // スコア降順でソート（ランキング順位 × 値下がり率）
+  // スコア降順でソート（値下がり率 × ランキング加点）
   products.sort((a, b) => b.score - a.score);
-  console.log(`\n  合計 ${products.length} 件 (スコア順: ランク × 値下がり率)`);
+  console.log(`\n  合計 ${products.length} 件 (スコア順: 値下がり率 × ランキング加点)`);
   return products;
 }
 
