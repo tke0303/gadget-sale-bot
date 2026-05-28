@@ -115,39 +115,50 @@ async function fetchHtml(url, referer, attempt = 1) {
 // ══════════════════════════════════════════════════════════════
 
 /**
- * 価格.com IT家電ランキングを順にフェッチして
+ * 価格.com ランキングを順にフェッチして
  * Map<kakakuItemId, rankPosition> を構築する（最大 maxRank 件）
  * 取得順序 = ランキング順位（1位から）
+ * 注: /item/K（家電）・/item/J（PC等）・/item/S（その他）すべて対象
  */
+// ランキング取得URL（優先順）
+const RANKING_URLS = [
+  'https://kakaku.com/ranking/kaden_ict/',
+  'https://kakaku.com/ranking/',
+];
+
 async function buildRankMap(maxRank = 300) {
   const rankMap = new Map(); // itemId → rankPosition (1-based)
-  const BASE    = 'https://kakaku.com/ranking/kaden_ict/';
 
-  for (let page = 1; rankMap.size < maxRank; page++) {
-    const url  = page === 1 ? BASE : `${BASE}?page=${page}`;
-    console.log(`  [ranking] p${page} 取得中...`);
+  for (const BASE of RANKING_URLS) {
+    if (rankMap.size >= maxRank) break;
 
-    const html = await fetchHtml(url, 'https://kakaku.com/ranking/');
-    if (!html) break;
+    for (let page = 1; rankMap.size < maxRank; page++) {
+      const url  = page === 1 ? BASE : `${BASE}?page=${page}`;
+      console.log(`  [ranking] p${page} 取得中... (${BASE.split('/').slice(-2, -1)[0]})`);
 
-    const $    = cheerio.load(html);
-    const seen = new Set();
-    let   added = 0;
+      const html = await fetchHtml(url, 'https://kakaku.com/ranking/');
+      if (!html) break;
 
-    // ページ上の /item/K... リンクを出現順にランキング番号として記録
-    $('a[href*="/item/K"]').each((_, el) => {
-      if (rankMap.size >= maxRank) return false;
-      const href = $(el).attr('href') || '';
-      const m    = href.match(/\/item\/(K\d+)/);
-      if (!m || seen.has(m[1]) || rankMap.has(m[1])) return;
-      seen.add(m[1]);
-      rankMap.set(m[1], rankMap.size + 1);
-      added++;
-    });
+      const $    = cheerio.load(html);
+      const seen = new Set();
+      let   added = 0;
 
-    console.log(`  [ranking] p${page}: +${added}件 (累計 ${rankMap.size}件)`);
-    if (added === 0) break; // ページ末尾
-    if (rankMap.size < maxRank) await sleep(1200);
+      // /item/[A-Z]\d{10}/ 形式のリンクを出現順にランキング番号として記録
+      // K=家電, J=PC/カメラ等, S=その他 をすべて対象にする
+      $('a[href*="/item/"]').each((_, el) => {
+        if (rankMap.size >= maxRank) return false;
+        const href = $(el).attr('href') || '';
+        const m    = href.match(/\/item\/([A-Z]\d{10})\//i);
+        if (!m || seen.has(m[1]) || rankMap.has(m[1])) return;
+        seen.add(m[1]);
+        rankMap.set(m[1], rankMap.size + 1);
+        added++;
+      });
+
+      console.log(`  [ranking] p${page}: +${added}件 (累計 ${rankMap.size}件)`);
+      if (added === 0) break; // ページ末尾 or このURLは終了
+      if (rankMap.size < maxRank) await sleep(1200);
+    }
   }
 
   console.log(`  [ranking] ランキングマップ完成: ${rankMap.size}件`);
@@ -163,11 +174,11 @@ function extractProductLinks(html, sourceLabel) {
   const seen  = new Set();
   const links = [];
 
-  $('a[href*="/item/K"]').each((_, el) => {
+  $('a[href*="/item/"]').each((_, el) => {
     let href = $(el).attr('href') || '';
     if (!href.startsWith('http')) href = 'https://kakaku.com' + href;
 
-    const m = href.match(/\/item\/(K\d+)/);
+    const m = href.match(/\/item\/([A-Z]\d{10})\//i);
     if (!m || seen.has(m[1])) return;
     seen.add(m[1]);
 
@@ -389,7 +400,7 @@ async function scrapeProducts() {
   // ── ③ 候補をマージ（ランキング順 + 値下がりアノテーション）──
   const pricedownById = new Map();
   for (const c of pricedownCandidates) {
-    const id = c.kakakuUrl.match(/\/item\/(K\d+)/)?.[1];
+    const id = c.kakakuUrl.match(/\/item\/([A-Z]\d{10})\//i)?.[1];
     if (id) pricedownById.set(id, c);
   }
 
@@ -411,7 +422,7 @@ async function scrapeProducts() {
 
   // 値下がりページのみにあるアイテム（ランク外）を末尾に追加
   for (const c of pricedownCandidates) {
-    const id = c.kakakuUrl.match(/\/item\/(K\d+)/)?.[1];
+    const id = c.kakakuUrl.match(/\/item\/([A-Z]\d{10})\//i)?.[1];
     if (id && !addedIds.has(id)) {
       allCandidates.push({ ...c, rankPosition: null });
     }
