@@ -1,17 +1,25 @@
 /**
- * scraper.js  ─  価格.com から値下がりガジェット情報を取得し
+ * scraper.js  ─  価格.com 売れ筋ランキング × 値下がり情報から
  *                Amazon アフィリエイトリンク（ASIN形式）を付与して返す
  *
+ * 品質フィルタ:
+ *   1. 価格.com IT家電ランキング 上位300位以内
+ *   2. 値下がり率 30% 以上
+ *   3. Amazon レビュー件数 100件以上（取得できた場合のみ適用）
+ *
+ * スコアリング: (301 - rankPosition) × discountRate の降順
+ *
  * 将来 PA-API が使えるようになったらこのファイルだけ差し替える。
- * 返却する product オブジェクトの形式は変わらない:
- *   { asin, title, currentPrice, originalPrice, discountRate, url, image }
+ * 返却する product オブジェクト:
+ *   { asin, title, currentPrice, originalPrice, discountRate,
+ *     rankPosition, reviewCount, rating, score, url, image }
  */
 require('dotenv').config();
 const axios   = require('axios');
 const cheerio = require('cheerio');
 const iconv   = require('iconv-lite');
 
-// ── ブラウザ偽装ヘッダー（brotli除外でCI環境のデコードエラーを防ぐ）─
+// ── ブラウザ偽装ヘッダー ────────────────────────────────────────
 const HEADERS = {
   'User-Agent':
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
@@ -20,7 +28,7 @@ const HEADERS = {
     'text/html,application/xhtml+xml,application/xml;q=0.9,' +
     'image/avif,image/webp,*/*;q=0.8',
   'Accept-Language':  'ja,en-US;q=0.9,en;q=0.8',
-  'Accept-Encoding':  'gzip, deflate',   // brotli(br)を除外
+  'Accept-Encoding':  'gzip, deflate',
   'sec-ch-ua':        '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
   'sec-ch-ua-mobile': '?0',
   'sec-ch-ua-platform': '"macOS"',
@@ -41,43 +49,35 @@ function parsePrice(text) {
   return isNaN(n) ? null : n;
 }
 
-/** URL から Amazon ASIN (10文字) を抽出 */
-function extractAsin(url) {
-  if (!url) return null;
-  const m = url.match(/amazon\.co\.jp\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
-  return m ? m[1] : null;
-}
-
-/** URL エンコード済み文字列から ASIN を抽出 */
-function extractAsinEncoded(str) {
-  if (!str) return null;
-  // dp%2F または dp%252F (二重エンコード)
-  const m = str.match(/dp(?:%252F|%2F)([A-Z0-9]{10})/i);
-  return m ? m[1] : null;
-}
-
-/** ASIN → Amazon アフィリエイトURL（amzn.to 短縮なし、dp形式固定）*/
+/** ASIN → Amazon アフィリエイトURL（dp形式固定、amzn.to 短縮なし）*/
 function makeAmazonUrl(asin) {
   const tag = process.env.AMAZON_ASSOCIATE_TAG || '';
   return `https://www.amazon.co.jp/dp/${asin}${tag ? '?tag=' + tag : ''}`;
 }
 
-// ── 文字コード検出（Content-Type ヘッダー or <meta charset>）───────
+/** Content-Type or <meta charset> から文字コードを検出 */
 function detectCharset(contentType, buffer) {
-  // 1. Content-Type ヘッダーから
   if (contentType) {
     const m = contentType.match(/charset=([^\s;]+)/i);
     if (m) return m[1].toLowerCase().replace('_', '-');
   }
-  // 2. HTML 先頭 2000バイトの <meta charset> から
   const head = buffer.slice(0, 2000).toString('ascii');
-  const m2 = head.match(/charset=["']?([^"';\s>]+)/i);
+  const m2   = head.match(/charset=["']?([^"';\s>]+)/i);
   if (m2) return m2[1].toLowerCase().replace('_', '-');
-  // 3. デフォルトは UTF-8
   return 'utf-8';
 }
 
-// ── 汎用フェッチ（Shift-JIS対応 + 指数バックオフリトライ付き）─────
+/** 文字列から Amazon ASIN を探す（直接URL / URLエンコード済み両対応）*/
+function findAsinInStr(str) {
+  if (!str) return null;
+  let m = str.match(/amazon\.co\.jp\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+  if (m) return m[1];
+  m = str.match(/dp(?:%252F|%2F)([A-Z0-9]{10})/i);
+  if (m) return m[1];
+  return null;
+}
+
+// ── 汎用フェッチ（Shift-JIS対応 + 指数バックオフリトライ）────────
 async function fetchHtml(url, referer, attempt = 1) {
   try {
     const res = await axios.get(url, {
@@ -85,16 +85,12 @@ async function fetchHtml(url, referer, attempt = 1) {
       timeout:      25000,
       decompress:   true,
       maxRedirects: 5,
-      responseType: 'arraybuffer',   // バイナリで受け取る
+      responseType: 'arraybuffer',
     });
-
-    const buffer      = Buffer.from(res.data);
-    const contentType = res.headers['content-type'] || '';
-    const charset     = detectCharset(contentType, buffer);
-
-    // iconv-lite で正しいエンコーディングにデコード
+    const buffer  = Buffer.from(res.data);
+    const charset = detectCharset(res.headers['content-type'] || '', buffer);
     const decoded = iconv.decode(buffer, charset);
-    if (typeof decoded !== 'string' || decoded.length === 0) {
+    if (!decoded) {
       console.warn(`  [FETCH] デコード失敗: ${url.slice(0, 70)}`);
       return null;
     }
@@ -107,7 +103,7 @@ async function fetchHtml(url, referer, attempt = 1) {
       await sleep(wait);
       return fetchHtml(url, referer, attempt + 1);
     }
-    if (status !== 404) {  // 404は静かに握りつぶす
+    if (status !== 404) {
       console.warn(`  [FETCH] ${err.message} | ${url.slice(0, 70)}`);
     }
     return null;
@@ -115,100 +111,164 @@ async function fetchHtml(url, referer, attempt = 1) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// STEP 1 ─ 価格.com の値下がりページから商品URLを収集
+// STEP 1 ─ 売れ筋ランキングマップを構築（IT家電 top 300）
 // ══════════════════════════════════════════════════════════════
 
 /**
- * 価格.com の各ページから /item/K…/ 形式の商品URLを抽出する。
- * 同時に、ページ上に割引率・価格が表示されていれば合わせて取得する。
+ * 価格.com IT家電ランキングを順にフェッチして
+ * Map<kakakuItemId, rankPosition> を構築する（最大 maxRank 件）
+ * 取得順序 = ランキング順位（1位から）
  */
+async function buildRankMap(maxRank = 300) {
+  const rankMap = new Map(); // itemId → rankPosition (1-based)
+  const BASE    = 'https://kakaku.com/ranking/kaden_ict/';
+
+  for (let page = 1; rankMap.size < maxRank; page++) {
+    const url  = page === 1 ? BASE : `${BASE}?page=${page}`;
+    console.log(`  [ranking] p${page} 取得中...`);
+
+    const html = await fetchHtml(url, 'https://kakaku.com/ranking/');
+    if (!html) break;
+
+    const $    = cheerio.load(html);
+    const seen = new Set();
+    let   added = 0;
+
+    // ページ上の /item/K... リンクを出現順にランキング番号として記録
+    $('a[href*="/item/K"]').each((_, el) => {
+      if (rankMap.size >= maxRank) return false;
+      const href = $(el).attr('href') || '';
+      const m    = href.match(/\/item\/(K\d+)/);
+      if (!m || seen.has(m[1]) || rankMap.has(m[1])) return;
+      seen.add(m[1]);
+      rankMap.set(m[1], rankMap.size + 1);
+      added++;
+    });
+
+    console.log(`  [ranking] p${page}: +${added}件 (累計 ${rankMap.size}件)`);
+    if (added === 0) break; // ページ末尾
+    if (rankMap.size < maxRank) await sleep(1200);
+  }
+
+  console.log(`  [ranking] ランキングマップ完成: ${rankMap.size}件`);
+  return rankMap;
+}
+
+// ══════════════════════════════════════════════════════════════
+// STEP 2 ─ 値下がりページから割引候補を収集
+// ══════════════════════════════════════════════════════════════
+
 function extractProductLinks(html, sourceLabel) {
   const $ = cheerio.load(html);
-  const seen = new Set();
+  const seen  = new Set();
   const links = [];
 
   $('a[href*="/item/K"]').each((_, el) => {
     let href = $(el).attr('href') || '';
     if (!href.startsWith('http')) href = 'https://kakaku.com' + href;
 
-    // /item/KXXXXXXXXXX/ の形に正規化
     const m = href.match(/\/item\/(K\d+)/);
     if (!m || seen.has(m[1])) return;
     seen.add(m[1]);
 
     const kakakuUrl  = `https://kakaku.com/item/${m[1]}/`;
     const $container = $(el).closest('li, tr, div');
-
-    // ページ上の割引・価格情報（なければ null）
     const priceText  = $container.find('[class*="price"],[class*="Price"]').first().text();
     const dropText   = $container.find('[class*="down"],[class*="off"],[class*="Down"],[class*="Off"]').text();
     const dm         = dropText.match(/(\d+)%/);
-    const hintDiscount = dm ? parseInt(dm[1]) : null;
-    const hintPrice    = parsePrice(priceText);
-    const hintTitle    = $(el).text().trim().replace(/\s+/g, ' ') || '';
 
-    links.push({ kakakuUrl, hintTitle, hintPrice, hintDiscount });
+    links.push({
+      kakakuUrl,
+      hintTitle:    $(el).text().trim().replace(/\s+/g, ' '),
+      hintPrice:    parsePrice(priceText),
+      hintDiscount: dm ? parseInt(dm[1]) : null,
+    });
   });
 
-  console.log(`  [${sourceLabel}] 商品リンク: ${links.length} 件`);
+  console.log(`  [${sourceLabel}] ${links.length}件`);
   return links;
 }
 
-// 価格.com 値下がり情報ページ（優先順）
 const PRICEDOWN_URLS = [
   { url: 'https://kakaku.com/pricedown/pricedown.asp?ca=0004', label: '値下がり IT/PC' },
   { url: 'https://kakaku.com/pricedown/pricedown.asp',         label: '値下がり 全般' },
   { url: 'https://kakaku.com/pricedown/',                      label: '値下がり Root' },
-  { url: 'https://kakaku.com/ranking/kaden_ict/',              label: 'ランキング IT家電' },
-  { url: 'https://kakaku.com/ranking/',                        label: 'ランキング 全般' },
 ];
 
-async function discoverProducts() {
+async function discoverPricedownCandidates() {
   for (const { url, label } of PRICEDOWN_URLS) {
-    console.log(`  [kakaku] ${label}: ${url}`);
     const html = await fetchHtml(url, 'https://kakaku.com/');
-    if (!html) continue;
-
+    if (!html) { await sleep(1000); continue; }
     const links = extractProductLinks(html, label);
-    if (links.length >= 3) {   // 値下がりページは件数が少ないので閾値を下げる
-      // ヒント割引率の高い順に並べ替え（既に判明しているもの優先）
-      links.sort((a, b) => (b.hintDiscount || 0) - (a.hintDiscount || 0));
-      return links;
-    }
+    if (links.length >= 3) return links;
     await sleep(1000);
   }
   return [];
 }
 
 // ══════════════════════════════════════════════════════════════
-// STEP 2 ─ 価格.com 商品詳細ページから価格・ASIN を取得
+// STEP 3 ─ Amazon レビューデータ取得（オプション）
 // ══════════════════════════════════════════════════════════════
 
 /**
- * テキスト or href から ASIN を探す共通ヘルパー
+ * Amazon 商品ページからレビュー件数・評価を取得する。
+ * GitHub Actions の IP ブロック時は null を返す（フィルタをスキップ）。
+ * タイムアウト 8秒・リトライなし で素早く諦める。
  */
-function findAsinInStr(str) {
-  if (!str) return null;
-  // 直接 amazon.co.jp/dp/XXXXXXXXXX
-  let m = str.match(/amazon\.co\.jp\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
-  if (m) return m[1];
-  // URL エンコード済み: dp%2F or dp%252F
-  m = str.match(/dp(?:%252F|%2F)([A-Z0-9]{10})/i);
-  if (m) return m[1];
-  return null;
+async function fetchAmazonReviewData(asin) {
+  const url = `https://www.amazon.co.jp/dp/${asin}`;
+  try {
+    const res = await axios.get(url, {
+      headers:      { ...HEADERS, Referer: 'https://www.amazon.co.jp/' },
+      timeout:      8000,
+      decompress:   true,
+      maxRedirects: 3,
+      responseType: 'arraybuffer',
+    });
+    const buffer  = Buffer.from(res.data);
+    const charset = detectCharset(res.headers['content-type'] || '', buffer);
+    const html    = iconv.decode(buffer, charset);
+    if (!html) return null;
+
+    const $ = cheerio.load(html);
+
+    // レビュー件数
+    const reviewRaw = (
+      $('#acrCustomerReviewText').text() ||
+      $('[data-hook="total-review-count"]').text() ||
+      ''
+    ).replace(/[,，, ]/g, '');
+    const countM     = reviewRaw.match(/(\d+)/);
+    const reviewCount = countM ? parseInt(countM[1]) : null;
+
+    // 評価（5段階）
+    const ratingRaw = (
+      $('span[data-hook="rating-out-of-text"]').text() ||
+      $('#acrPopover').attr('title') ||
+      $('i.a-icon-star span.a-icon-alt').first().text() ||
+      ''
+    );
+    const ratingM = ratingRaw.match(/(\d+\.?\d*)/);
+    const rating  = ratingM ? parseFloat(ratingM[1]) : null;
+
+    if (!reviewCount && !rating) return null;
+    return { reviewCount, rating };
+  } catch {
+    return null; // ブロック・タイムアウトは静かにスキップ
+  }
 }
 
-/**
- * 価格.com の商品詳細ページを解析して以下を返す:
- *   title, currentPrice, originalPrice, discountRate, asin, image
- */
+// ══════════════════════════════════════════════════════════════
+// STEP 4 ─ 価格.com 商品詳細ページ取得
+// ══════════════════════════════════════════════════════════════
+
 async function fetchKakakuDetail(kakakuUrl) {
   const html = await fetchHtml(kakakuUrl, 'https://kakaku.com/');
   if (!html) return null;
 
   const $ = cheerio.load(html);
 
-  // ── タイトル ──
+  // タイトル
   const title = (
     $('h1.itmNm').text() ||
     $('[class*="itemName"] h1').text() ||
@@ -217,7 +277,7 @@ async function fetchKakakuDetail(kakakuUrl) {
   ).trim().replace(/\s+/g, ' ');
   if (!title || title.length < 3) return null;
 
-  // ── 最安値（現在価格）──
+  // 最安値
   const currentPrice =
     parsePrice($('em.prc').first().text()) ||
     parsePrice($('.cheapPrice em').first().text()) ||
@@ -225,7 +285,7 @@ async function fetchKakakuDetail(kakakuUrl) {
     parsePrice($('#priceTable td.price').first().text()) ||
     null;
 
-  // ── 参考価格・定価（メーカー希望小売価格）──
+  // メーカー希望小売価格
   const originalPrice =
     parsePrice($('#makerHopPrice dd').first().text()) ||
     parsePrice($('[class*="makerPrice"] dd').first().text()) ||
@@ -233,58 +293,48 @@ async function fetchKakakuDetail(kakakuUrl) {
     parsePrice($('dd[class*="reference"]').first().text()) ||
     null;
 
-  // ── 割引率 ──
+  // 割引率
   let discountRate = null;
   if (currentPrice && originalPrice && originalPrice > currentPrice) {
     discountRate = Math.round((1 - currentPrice / originalPrice) * 100);
   }
-  // 値下がり情報ページ由来のテキストがあれば補完
   if (!discountRate) {
-    const savingsText = $('[class*="down"],[class*="off"]').text();
-    const sm = savingsText.match(/(\d+)%/);
+    const sm = $('[class*="down"],[class*="off"]').text().match(/(\d+)%/);
     if (sm) discountRate = parseInt(sm[1]);
   }
 
-  // ── Amazon ASIN ──
-  // 価格.com のショップリンクは href / onclick / data-* いずれかに埋め込まれている
+  // ASIN 抽出（複数戦略）
   let asin = null;
 
-  // 1. href 属性（直接 or url= パラメータ）
+  // 1. href 属性
   $('a').each((_, el) => {
     if (asin) return false;
     const href = $(el).attr('href') || '';
-
-    // 直接 Amazon URL
     const direct = findAsinInStr(href);
     if (direct) { asin = direct; return false; }
-
-    // リダイレクト URL に url= パラメータが含まれる場合
     if (href.includes('url=')) {
       try {
         const base     = href.startsWith('http') ? href : `https://kakaku.com${href}`;
         const urlParam = new URL(base).searchParams.get('url') || '';
         const found    = findAsinInStr(urlParam);
         if (found) { asin = found; return false; }
-      } catch (_) { /* ignore parse error */ }
-      // URL エンコードがネストしている場合も findAsinInStr でカバー済み
+      } catch (_) {}
       const encoded = findAsinInStr(href);
       if (encoded) { asin = encoded; return false; }
     }
   });
 
-  // 2. onclick 属性（価格.com は jumpToShop() に URL を埋め込む）
+  // 2. onclick 属性
   if (!asin) {
     $('[onclick]').each((_, el) => {
       if (asin) return false;
       const onclick = $(el).attr('onclick') || '';
       const found   = findAsinInStr(onclick);
       if (found) { asin = found; return false; }
-      // onclick 内の URL デコード試行
       try {
-        const decoded = decodeURIComponent(onclick);
-        const f2 = findAsinInStr(decoded);
+        const f2 = findAsinInStr(decodeURIComponent(onclick));
         if (f2) { asin = f2; return false; }
-      } catch (_) { /* ignore */ }
+      } catch (_) {}
     });
   }
 
@@ -293,33 +343,30 @@ async function fetchKakakuDetail(kakakuUrl) {
     $('[data-url],[data-href],[data-link]').each((_, el) => {
       if (asin) return false;
       for (const attr of ['data-url', 'data-href', 'data-link']) {
-        const val = $(el).attr(attr) || '';
-        const found = findAsinInStr(val);
+        const found = findAsinInStr($(el).attr(attr) || '');
         if (found) { asin = found; return false; }
       }
     });
   }
 
-  // 4. HTML 全体から正規表現で検索（最終手段）
+  // 4. HTML 全文検索（最終手段）
   if (!asin) {
-    const fullHtml = $.html();
-    const m = fullHtml.match(/amazon\.co\.jp\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
-    if (m) asin = m[1];
+    const full = $.html();
+    const m1 = full.match(/amazon\.co\.jp\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+    if (m1) asin = m1[1];
+  }
+  if (!asin) {
+    const full = $.html();
+    const m2 = full.match(/dp(?:%252F|%2F)([A-Z0-9]{10})/i);
+    if (m2) asin = m2[1];
   }
 
-  // 5. HTML 全体の URL エンコード済みパターン（最終手段 その2）
-  if (!asin) {
-    const fullHtml = $.html();
-    const m = fullHtml.match(/dp(?:%252F|%2F)([A-Z0-9]{10})/i);
-    if (m) asin = m[1];
-  }
-
-  // ── 商品画像 ──
+  // 商品画像
   const image = (
     $('img#ItemPhoto').attr('src') ||
     $('#main_photo img').attr('src') ||
-    $('[class*="mainPhoto"] img, [class*="MainPhoto"] img').first().attr('src') ||
-    $('img[class*="itemImg"], img[class*="ItemImg"]').first().attr('src') ||
+    $('[class*="mainPhoto"] img,[class*="MainPhoto"] img').first().attr('src') ||
+    $('img[class*="itemImg"],img[class*="ItemImg"]').first().attr('src') ||
     ''
   );
 
@@ -329,59 +376,132 @@ async function fetchKakakuDetail(kakakuUrl) {
 // ══════════════════════════════════════════════════════════════
 // MAIN ─ 全体フロー
 // ══════════════════════════════════════════════════════════════
-async function scrapeProducts() {
-  // ── 商品候補を収集 ──
-  console.log('\n  ▶ 価格.com から商品候補を収集中...');
-  const candidates = await discoverProducts();
 
-  if (candidates.length === 0) {
-    console.error('  [scraper] 価格.com から商品リンクを取得できませんでした');
-    return [];
+async function scrapeProducts() {
+  // ── ① ランキングマップ構築（top 300）──
+  console.log('\n  ▶ 価格.com IT家電ランキングを収集中 (top 300)...');
+  const rankMap = await buildRankMap(300);
+
+  // ── ② 値下がり候補を収集 ──
+  console.log('\n  ▶ 価格.com 値下がり商品を収集中...');
+  const pricedownCandidates = await discoverPricedownCandidates();
+
+  // ── ③ 候補をマージ（ランキング順 + 値下がりアノテーション）──
+  const pricedownById = new Map();
+  for (const c of pricedownCandidates) {
+    const id = c.kakakuUrl.match(/\/item\/(K\d+)/)?.[1];
+    if (id) pricedownById.set(id, c);
   }
 
-  // ── 各商品の詳細を取得（最大25件を調査して10件以上集める）──
-  console.log(`\n  ▶ 詳細ページを取得中 (最大25件調査)...`);
+  const allCandidates = [];
+  const addedIds      = new Set();
+
+  // ランキング上位から追加（値下がりヒントをマージ）
+  for (const [itemId, rank] of rankMap) {
+    const pd = pricedownById.get(itemId);
+    allCandidates.push({
+      kakakuUrl:    `https://kakaku.com/item/${itemId}/`,
+      rankPosition: rank,
+      hintTitle:    pd?.hintTitle    ?? '',
+      hintPrice:    pd?.hintPrice    ?? null,
+      hintDiscount: pd?.hintDiscount ?? null,
+    });
+    addedIds.add(itemId);
+  }
+
+  // 値下がりページのみにあるアイテム（ランク外）を末尾に追加
+  for (const c of pricedownCandidates) {
+    const id = c.kakakuUrl.match(/\/item\/(K\d+)/)?.[1];
+    if (id && !addedIds.has(id)) {
+      allCandidates.push({ ...c, rankPosition: null });
+    }
+  }
+
+  // ④ 並べ替え: 順位昇順（1位が先）、同順位なら割引ヒントが高い方優先
+  allCandidates.sort((a, b) => {
+    const rA = a.rankPosition ?? 9999;
+    const rB = b.rankPosition ?? 9999;
+    if (rA !== rB) return rA - rB;
+    return (b.hintDiscount ?? 0) - (a.hintDiscount ?? 0);
+  });
+
+  const inRankCount = allCandidates.filter(c => c.rankPosition !== null && c.rankPosition <= 300).length;
+  console.log(`\n  候補合計: ${allCandidates.length}件 (ランキング300位内: ${inRankCount}件)`);
+
+  // ── ⑤ 詳細取得 + 3段階フィルタリング（最大30件調査）──
+  console.log('\n  ▶ 詳細取得・品質フィルタリング中 (最大30件)...');
   const products = [];
 
-  for (const { kakakuUrl, hintTitle, hintPrice, hintDiscount } of candidates.slice(0, 25)) {
-    await sleep(1200);  // 価格.com へのリクエスト間隔
+  for (const { kakakuUrl, hintTitle, hintPrice, hintDiscount, rankPosition } of allCandidates.slice(0, 30)) {
+    await sleep(1200);
 
-    const label = hintTitle.slice(0, 35) || kakakuUrl.slice(-25);
+    const label  = (hintTitle || '').slice(0, 35) || kakakuUrl.slice(-25);
     const detail = await fetchKakakuDetail(kakakuUrl);
 
     if (!detail) { console.log(`  ○ 取得失敗: ${label}`); continue; }
-
-    // ASIN なし → Amazon リンクが生成できないのでスキップ
     if (!detail.asin) {
       console.log(`  ○ ASIN なし: ${detail.title.slice(0, 35)}`);
       continue;
     }
 
-    // 割引率 < 30% → スキップ
-    const discountRate = detail.discountRate || hintDiscount;
+    // フィルタ①: 値下がり率 30% 以上
+    const discountRate = detail.discountRate ?? hintDiscount;
     if (!discountRate || discountRate < 30) {
       console.log(`  ○ 割引${discountRate ?? '?'}% < 30%: ${detail.title.slice(0, 30)}`);
       continue;
     }
 
-    const product = {
+    // フィルタ②: ランキング300位以内（ランク外アイテムはフォールバックとして通す）
+    if (rankPosition !== null && rankPosition > 300) {
+      console.log(`  ○ ランク${rankPosition}位 > 300: ${detail.title.slice(0, 30)}`);
+      continue;
+    }
+
+    // フィルタ③: Amazon レビュー件数 100件以上（取得できた場合のみ適用）
+    let reviewCount = null, rating = null;
+    const amazonData = await fetchAmazonReviewData(detail.asin);
+    if (amazonData) {
+      reviewCount = amazonData.reviewCount;
+      rating      = amazonData.rating;
+      if (reviewCount !== null && reviewCount < 100) {
+        console.log(`  ○ レビュー${reviewCount}件 < 100件: ${detail.title.slice(0, 30)}`);
+        continue;
+      }
+    }
+
+    // スコア = (301 - rank) × discountRate
+    // ランク外は rank=300 扱いで低スコアのフォールバック
+    const effectiveRank = rankPosition ?? 300;
+    const score = (301 - Math.min(effectiveRank, 300)) * discountRate;
+
+    const rankStr   = rankPosition ? `${rankPosition}位` : 'ランク外';
+    const reviewStr = reviewCount  ? `${reviewCount}件`  : '未取得';
+    console.log(
+      `  ✅ ${detail.asin} | rank:${rankStr} | ${discountRate}%OFF` +
+      ` | reviews:${reviewStr} | score:${score}` +
+      ` | ${detail.title.slice(0, 35)}`
+    );
+
+    products.push({
       asin:          detail.asin,
       title:         detail.title,
-      currentPrice:  detail.currentPrice  ?? hintPrice,
+      currentPrice:  detail.currentPrice ?? hintPrice,
       originalPrice: detail.originalPrice,
       discountRate,
+      rankPosition:  rankPosition ?? null,
+      reviewCount,
+      rating,
+      score,
       url:           makeAmazonUrl(detail.asin),
       image:         detail.image,
-    };
-
-    products.push(product);
-    console.log(`  ✅ ${detail.asin} | ${discountRate}%OFF | ${detail.title.slice(0, 40)}`);
+    });
 
     if (products.length >= 10) break;
   }
 
-  products.sort((a, b) => b.discountRate - a.discountRate);
-  console.log(`\n  合計 ${products.length} 件 (30%以上割引, Amazon ASIN 付き)`);
+  // スコア降順でソート（ランキング順位 × 値下がり率）
+  products.sort((a, b) => b.score - a.score);
+  console.log(`\n  合計 ${products.length} 件 (スコア順: ランク × 値下がり率)`);
   return products;
 }
 
