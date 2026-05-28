@@ -4,7 +4,7 @@
  *
  * 品質フィルタ（必須）:
  *   1. 値下がり率 30% 以上
- *   2. Amazon レビュー件数 100件以上（取得できた場合のみ適用）
+ *   2. Amazon レビュー件数 50件以上（取得できた場合のみ適用）
  *
  * スコアリング: discountRate × (1 + rankBonus)
  *   ランキング上位ほど加点（rank1=最大2倍）、ランク外はベーススコアのみ
@@ -201,9 +201,14 @@ function extractProductLinks(html, sourceLabel) {
 }
 
 const PRICEDOWN_URLS = [
-  { url: 'https://kakaku.com/pricedown/pricedown.asp?ca=0004', label: '値下がり IT/PC' },
-  { url: 'https://kakaku.com/pricedown/pricedown.asp',         label: '値下がり 全般' },
-  { url: 'https://kakaku.com/pricedown/',                      label: '値下がり Root' },
+  { url: 'https://kakaku.com/pricedown/pricedown.asp?ca=0004', label: '値下がり PC'         },
+  { url: 'https://kakaku.com/pricedown/pricedown.asp?ca=0005', label: '値下がり デジカメ'   },
+  { url: 'https://kakaku.com/pricedown/pricedown.asp?ca=0006', label: '値下がり スマホ'     },
+  { url: 'https://kakaku.com/pricedown/pricedown.asp?ca=0007', label: '値下がり AV家電'     },
+  { url: 'https://kakaku.com/pricedown/pricedown.asp?ca=0008', label: '値下がり 生活家電'   },
+  { url: 'https://kakaku.com/pricedown/pricedown.asp?ca=0009', label: '値下がり 音響'       },
+  { url: 'https://kakaku.com/pricedown/pricedown.asp',         label: '値下がり 全般'       },
+  { url: 'https://kakaku.com/pricedown/',                      label: '値下がり Root'       },
 ];
 
 async function discoverPricedownCandidates() {
@@ -485,8 +490,8 @@ async function scrapeProducts() {
     if (amazonData) {
       reviewCount = amazonData.reviewCount;
       rating      = amazonData.rating;
-      if (reviewCount !== null && reviewCount < 100) {
-        console.log(`  ○ レビュー${reviewCount}件 < 100件: ${detail.title.slice(0, 30)}`);
+      if (reviewCount !== null && reviewCount < 50) {
+        console.log(`  ○ レビュー${reviewCount}件 < 50件: ${detail.title.slice(0, 30)}`);
         continue;
       }
     }
