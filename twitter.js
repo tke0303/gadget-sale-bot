@@ -1,13 +1,16 @@
 require('dotenv').config();
 const { TwitterApi } = require('twitter-api-v2');
 
-const client = new TwitterApi({
-  appKey:      process.env.TWITTER_API_KEY,
-  appSecret:   process.env.TWITTER_API_SECRET,
-  accessToken: process.env.TWITTER_ACCESS_TOKEN,
-  accessSecret: process.env.TWITTER_ACCESS_TOKEN_SECRET,
-});
-const rwClient = client.readWrite;
+// ── 遅延初期化：Twitter Secrets が不要なワークフロー（WordPress記事投稿等）で
+//    このモジュールを読み込んでもクラッシュしないようにする
+function getClient() {
+  return new TwitterApi({
+    appKey:      process.env.TWITTER_API_KEY,
+    appSecret:   process.env.TWITTER_API_SECRET,
+    accessToken: process.env.TWITTER_ACCESS_TOKEN,
+    accessSecret: process.env.TWITTER_ACCESS_TOKEN_SECRET,
+  });
+}
 
 function buildTweetText(product) {
   const title = product.title.length > 45
@@ -38,6 +41,7 @@ function buildTweetText(product) {
 }
 
 async function postTweet(product) {
+  const rwClient = getClient().readWrite;
   const text = buildTweetText(product);
   console.log('\n投稿内容:\n' + text);
   await rwClient.v2.tweet(text);
