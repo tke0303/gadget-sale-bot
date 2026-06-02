@@ -38,19 +38,19 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
  */
 async function searchByGenre(genreId, label, page = 1) {
   const params = {
-    applicationId:  process.env.RAKUTEN_APP_ID,
-    affiliateId:    process.env.RAKUTEN_AFFILIATE_ID || undefined,
+    applicationId: process.env.RAKUTEN_APP_ID,
     genreId,
-    hits:           30,
+    hits:          30,
     page,
-    availability:   1,             // 在庫あり
-    sort:           '-reviewCount', // レビュー数降順
-    minReviewCount: 1,             // API側では1件以上のみ指定、後でフィルタ
-    format:         'json',
+    availability:  1,              // 在庫あり
+    sort:          '-reviewCount', // レビュー数降順
+    format:        'json',
   };
 
-  // undefined のキーを除外
-  Object.keys(params).forEach(k => params[k] === undefined && delete params[k]);
+  // アフィリエイトIDが設定されている場合のみ追加
+  if (process.env.RAKUTEN_AFFILIATE_ID) {
+    params.affiliateId = process.env.RAKUTEN_AFFILIATE_ID;
+  }
 
   try {
     const res = await axios.get(RAKUTEN_SEARCH_URL, {
@@ -61,12 +61,13 @@ async function searchByGenre(genreId, label, page = 1) {
     console.log(`  [${label}] ${items.length}件取得 (page ${page})`);
     return items.map(i => i.Item ?? i);
   } catch (err) {
-    const status = err.response?.status;
-    // 404 = ジャンルIDが存在しない → 静かにスキップ
-    if (status !== 404) {
-      console.warn(`  [${label}] 取得失敗: ${err.message}`);
-    } else {
+    const status   = err.response?.status;
+    const errBody  = err.response?.data;
+    const errMsg   = errBody?.error_description || errBody?.error || err.message;
+    if (status === 404) {
       console.log(`  [${label}] ジャンルID ${genreId} は存在しません。スキップ`);
+    } else {
+      console.warn(`  [${label}] 取得失敗 HTTP${status ?? '?'}: ${errMsg}`);
     }
     return [];
   }
