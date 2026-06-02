@@ -18,8 +18,9 @@
 require('dotenv').config();
 const axios = require('axios');
 
+// 2026-05-13 新エンドポイント（旧 app.rakuten.co.jp は廃止）
 const RAKUTEN_SEARCH_URL =
-  'https://app.rakuten.co.jp/services/api/IchibaItem/Search/20170706';
+  'https://openapi.rakuten.co.jp/ichibams/api/IchibaItem/Search/20220601';
 
 // ガジェット系ジャンルID（楽天市場）
 const GADGET_GENRES = [
@@ -37,8 +38,10 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
  * ジャンルごとにレビュー数・評価でソートして取得
  */
 async function searchByGenre(genreId, label, page = 1) {
+  // 新認証方式（2026-05-13〜）: applicationId(UUID) + accessKey + Referer ヘッダー
   const params = {
-    applicationId: process.env.RAKUTEN_APP_ID,
+    applicationId: process.env.RAKUTEN_APP_ID,   // UUID形式
+    accessKey:     process.env.RAKUTEN_ACCESS_KEY,
     genreId,
     hits:          30,
     page,
@@ -55,15 +58,18 @@ async function searchByGenre(genreId, label, page = 1) {
   try {
     const res = await axios.get(RAKUTEN_SEARCH_URL, {
       params,
+      headers: {
+        'Referer': 'https://gadget-gekiyasu.com',  // 新仕様で必須
+      },
       timeout: 15000,
     });
     const items = res.data?.Items ?? [];
     console.log(`  [${label}] ${items.length}件取得 (page ${page})`);
     return items.map(i => i.Item ?? i);
   } catch (err) {
-    const status   = err.response?.status;
-    const errBody  = err.response?.data;
-    const errMsg   = errBody?.error_description || errBody?.error || err.message;
+    const status  = err.response?.status;
+    const errBody = err.response?.data;
+    const errMsg  = errBody?.error_description || errBody?.error || err.message;
     if (status === 404) {
       console.log(`  [${label}] ジャンルID ${genreId} は存在しません。スキップ`);
     } else {
