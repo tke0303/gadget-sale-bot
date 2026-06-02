@@ -5,6 +5,10 @@ on:
     - cron: '30 23 * * *'  # 08:30 JST (毎日1回)
   workflow_dispatch:        # 手動実行
 
+concurrency:
+  group: article-post
+  cancel-in-progress: false
+
 jobs:
   post:
     runs-on: ubuntu-latest
@@ -24,9 +28,11 @@ jobs:
 
       - name: Post WordPress article
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          AMAZON_ASSOCIATE_TAG: ${{ secrets.AMAZON_ASSOCIATE_TAG }}
-          WORDPRESS_URL: ${{ secrets.WORDPRESS_URL }}
-          WORDPRESS_USERNAME: ${{ secrets.WORDPRESS_USERNAME }}
-          WORDPRESS_PASSWORD: ${{ secrets.WORDPRESS_PASSWORD }}
+          ANTHROPIC_API_KEY:     ${{ secrets.ANTHROPIC_API_KEY }}
+          RAKUTEN_APP_ID:        ${{ secrets.RAKUTEN_APP_ID }}
+          RAKUTEN_ACCESS_KEY:    ${{ secrets.RAKUTEN_ACCESS_KEY }}
+          RAKUTEN_AFFILIATE_ID:  ${{ secrets.RAKUTEN_AFFILIATE_ID }}
+          WORDPRESS_URL:         ${{ secrets.WORDPRESS_URL }}
+          WORDPRESS_USERNAME:    ${{ secrets.WORDPRESS_USERNAME }}
+          WORDPRESS_PASSWORD:    ${{ secrets.WORDPRESS_PASSWORD }}
         run: node run-article.js

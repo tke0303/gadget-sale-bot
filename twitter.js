@@ -1,23 +1,23 @@
 require('dotenv').config();
 const { TwitterApi } = require('twitter-api-v2');
 
-// ── 遅延初期化：Twitter Secrets が不要なワークフロー（WordPress記事投稿等）で
-//    このモジュールを読み込んでもクラッシュしないようにする
+// ── 遅延初期化：Twitter Secrets が不要なワークフローでクラッシュしないようにする
 function getClient() {
   return new TwitterApi({
-    appKey:      process.env.TWITTER_API_KEY,
-    appSecret:   process.env.TWITTER_API_SECRET,
-    accessToken: process.env.TWITTER_ACCESS_TOKEN,
+    appKey:       process.env.TWITTER_API_KEY,
+    appSecret:    process.env.TWITTER_API_SECRET,
+    accessToken:  process.env.TWITTER_ACCESS_TOKEN,
     accessSecret: process.env.TWITTER_ACCESS_TOKEN_SECRET,
   });
 }
 
 function buildTweetText(product) {
+  // タイトルは50文字まで
   const title = product.title.length > 50
     ? product.title.slice(0, 50) + '…'
     : product.title;
 
-  // 価格表示：定価→現在値（割引率）
+  // 価格表示: 定価 → 現在値（XX%OFF）
   let priceLine;
   if (product.currentPrice && product.originalPrice) {
     priceLine =
@@ -29,16 +29,23 @@ function buildTweetText(product) {
     priceLine = `${product.discountRate}%OFF 🎉`;
   }
 
-  const commentLine = product.comment ? `${product.comment}\n\n` : '';
+  // 評価・レビュー行
+  const ratingLine = (product.rating && product.reviewCount)
+    ? `⭐${product.rating.toFixed(1)}（${product.reviewCount.toLocaleString()}件）`
+    : '';
+
+  // Claudeコメント
+  const commentLine = product.comment ? `\n💁‍♂️「${product.comment}」` : '';
 
   return (
     `【🔥ガジェットセール】\n` +
-    `${title}\n` +
-    `${priceLine}\n\n` +
-    `${commentLine}` +
-    `👇 Amazonで見る\n` +
+    `${title}\n\n` +
+    `${priceLine}\n` +
+    (ratingLine ? `${ratingLine}\n` : '') +
+    `${commentLine}\n\n` +
+    `👇 楽天で見る\n` +
     `${product.url}\n\n` +
-    `#Amazon #ガジェット #セール #広告`
+    `#楽天 #ガジェット #セール #広告`
   );
 }
 

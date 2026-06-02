@@ -4,33 +4,34 @@ const Anthropic = require('@anthropic-ai/sdk');
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 async function generateComment(product) {
-  // 価格情報が取れているときだけ価格を含める
   const priceInfo = product.currentPrice
-    ? `価格: ¥${product.currentPrice.toLocaleString()}` +
-      (product.originalPrice ? `（定価¥${product.originalPrice.toLocaleString()}）` : '')
+    ? `現在価格: ¥${product.currentPrice.toLocaleString()}` +
+      (product.originalPrice
+        ? `（定価¥${product.originalPrice.toLocaleString()}）`
+        : '')
     : '';
 
   const prompt =
-    `あなたはAmazonのガジェットセールをSNSで紹介する人です。\n` +
+    `あなたは楽天市場のガジェットセールをSNSで紹介する人です。\n` +
     `以下の商品について、Twitterに投稿する一言コメントを書いてください。\n\n` +
     `【条件】\n` +
-    `・40文字以内\n` +
+    `・30文字以内\n` +
     `・カジュアルで親しみやすい口語体（ですます調NG、友達に話しかける感じ）\n` +
-    `・文末に必ず💁‍♂️を付ける\n` +
-    `・「〜を探してる方はチャンス」「〜持ってない人は今がお得」「これ安すぎ」など自然な表現で\n` +
-    `・ハッシュタグ・URLは不要\n` +
-    `・コメントのみを出力（前置きや説明は不要）\n\n` +
+    `・「〜探してた人チャンス」「これ安すぎ」「マジで買い」など自然な表現\n` +
+    `・絵文字・ハッシュタグ・URLは不要\n` +
+    `・コメント本文のみ出力（前置き不要）\n\n` +
     `商品名: ${product.title}\n` +
     `割引率: ${product.discountRate}%オフ\n` +
+    `評価: ⭐${product.rating?.toFixed(1)} (${product.reviewCount?.toLocaleString()}件)\n` +
     (priceInfo ? priceInfo + '\n' : '');
 
   const message = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
+    model:      'claude-haiku-4-5-20251001',
     max_tokens: 80,
-    messages: [{ role: 'user', content: prompt }],
+    messages:   [{ role: 'user', content: prompt }],
   });
 
-  return message.content[0].text.trim();
+  return message.content[0].text.trim().replace(/^「|」$/g, '');
 }
 
 module.exports = { generateComment };

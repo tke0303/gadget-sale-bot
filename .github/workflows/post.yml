@@ -3,17 +3,25 @@ name: Gadget Sale Bot - Tweet
 on:
   schedule:
     # 1日10回投稿 (JST基準) ※ UTC = JST - 9h
-    - cron: '0 23 * * *'  # 08:00 JST
-    - cron: '0 1 * * *'   # 10:00 JST
-    - cron: '0 3 * * *'   # 12:00 JST
-    - cron: '0 4 * * *'   # 13:00 JST
-    - cron: '0 6 * * *'   # 15:00 JST
-    - cron: '0 8 * * *'   # 17:00 JST
-    - cron: '0 10 * * *'  # 19:00 JST
-    - cron: '0 11 * * *'  # 20:00 JST
-    - cron: '0 12 * * *'  # 21:00 JST
-    - cron: '0 14 * * *'  # 23:00 JST
-  workflow_dispatch:       # 手動実行
+    - cron: '0 23 * * *'   # 08:00 JST
+    - cron: '0 1 * * *'    # 10:00 JST
+    - cron: '0 3 * * *'    # 12:00 JST
+    - cron: '0 4 * * *'    # 13:00 JST
+    - cron: '0 6 * * *'    # 15:00 JST
+    - cron: '0 8 * * *'    # 17:00 JST
+    - cron: '0 10 * * *'   # 19:00 JST
+    - cron: '0 11 * * *'   # 20:00 JST
+    - cron: '0 12 * * *'   # 21:00 JST
+    - cron: '0 14 * * *'   # 23:00 JST
+  workflow_dispatch:        # 手動実行
+
+# 同時実行を防ぐ（posted-items.json の競合回避）
+concurrency:
+  group: tweet-post
+  cancel-in-progress: false
+
+permissions:
+  contents: write           # posted-items.json をコミットするため
 
 jobs:
   post:
@@ -22,6 +30,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -34,10 +44,22 @@ jobs:
 
       - name: Post tweet
         env:
-          TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
-          TWITTER_API_SECRET: ${{ secrets.TWITTER_API_SECRET }}
-          TWITTER_ACCESS_TOKEN: ${{ secrets.TWITTER_ACCESS_TOKEN }}
+          TWITTER_API_KEY:             ${{ secrets.TWITTER_API_KEY }}
+          TWITTER_API_SECRET:          ${{ secrets.TWITTER_API_SECRET }}
+          TWITTER_ACCESS_TOKEN:        ${{ secrets.TWITTER_ACCESS_TOKEN }}
           TWITTER_ACCESS_TOKEN_SECRET: ${{ secrets.TWITTER_ACCESS_TOKEN_SECRET }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          AMAZON_ASSOCIATE_TAG: ${{ secrets.AMAZON_ASSOCIATE_TAG }}
+          ANTHROPIC_API_KEY:           ${{ secrets.ANTHROPIC_API_KEY }}
+          RAKUTEN_APP_ID:              ${{ secrets.RAKUTEN_APP_ID }}
+          RAKUTEN_ACCESS_KEY:          ${{ secrets.RAKUTEN_ACCESS_KEY }}
+          RAKUTEN_AFFILIATE_ID:        ${{ secrets.RAKUTEN_AFFILIATE_ID }}
         run: node run.js
+
+      - name: Save posted items to repo
+        if: success()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin main
+          git add posted-items.json
+          git diff --staged --quiet || git commit -m "chore: update posted items [skip ci]"
+          git push
