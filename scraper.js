@@ -38,10 +38,11 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
  * ジャンルごとにレビュー数・評価でソートして取得
  */
 async function searchByGenre(genreId, label, page = 1) {
-  // 新認証方式（2026-05-13〜）: applicationId(UUID) + accessKey + Referer ヘッダー
+  // 新認証方式（2026-05-13〜）: applicationId(UUID) + accessKey + httpReferrer(パラメータ)
   const params = {
-    applicationId: process.env.RAKUTEN_APP_ID,   // UUID形式
+    applicationId: process.env.RAKUTEN_APP_ID,    // UUID形式
     accessKey:     process.env.RAKUTEN_ACCESS_KEY,
+    httpReferrer:  'https://gadget-gekiyasu.com',  // REQUEST_CONTEXT_BODY_HTTP_REFERRER_MISSING 対応
     genreId,
     hits:          30,
     page,
@@ -59,9 +60,8 @@ async function searchByGenre(genreId, label, page = 1) {
     const res = await axios.get(RAKUTEN_SEARCH_URL, {
       params,
       headers: {
-        'Referer':       'https://gadget-gekiyasu.com',  // 新仕様で必須
-        'Authorization': `RakutenAuth applicationId=${process.env.RAKUTEN_APP_ID},accessKey=${process.env.RAKUTEN_ACCESS_KEY}`,
-        'Content-Type':  'application/json',
+        'Referer':      'https://gadget-gekiyasu.com',  // ヘッダーとパラメータ両方送る
+        'Content-Type': 'application/json',
       },
       timeout: 15000,
     });
@@ -149,7 +149,7 @@ async function scrapeProducts() {
         rawItems.push(item);
       }
     }
-    await sleep(500); // API レート制限対策
+    await sleep(1500); // API レート制限対策（新API: 429対応で間隔延長）
   }
 
   console.log(`\n  収集合計: ${rawItems.length}件 → フィルタリング中...`);
