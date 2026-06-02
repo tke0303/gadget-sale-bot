@@ -38,18 +38,23 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
  * ジャンルごとにレビュー数・評価でソートして取得
  */
 async function searchByGenre(genreId, label, page = 1) {
-  // 新認証方式（2026-05-13〜）: POST + JSONボディ
-  // REQUEST_CONTEXT_BODY_HTTP_REFERRER_MISSING → Referer をリクエストボディに含める
-  const body = {
-    applicationId: process.env.RAKUTEN_APP_ID,    // UUID形式
+  // 新認証方式（2026-05-13〜）
+  //   - applicationId / accessKey → クエリパラメータ（必須）
+  //   - httpReferrer              → リクエストボディ（POST）
+  //   - 検索条件                  → リクエストボディ（POST）
+  const queryParams = new URLSearchParams({
+    applicationId: process.env.RAKUTEN_APP_ID,
     accessKey:     process.env.RAKUTEN_ACCESS_KEY,
-    httpReferrer:  'https://gadget-gekiyasu.com',
+  });
+
+  const body = {
+    httpReferrer: 'https://gadget-gekiyasu.com',
     genreId,
-    hits:          30,
+    hits:         30,
     page,
-    availability:  1,              // 在庫あり
-    sort:          '-reviewCount', // レビュー数降順
-    format:        'json',
+    availability: 1,              // 在庫あり
+    sort:         '-reviewCount', // レビュー数降順
+    format:       'json',
   };
 
   // アフィリエイトIDが設定されている場合のみ追加
@@ -58,7 +63,7 @@ async function searchByGenre(genreId, label, page = 1) {
   }
 
   try {
-    const res = await axios.post(RAKUTEN_SEARCH_URL, body, {
+    const res = await axios.post(`${RAKUTEN_SEARCH_URL}?${queryParams}`, body, {
       headers: {
         'Content-Type': 'application/json',
         'Referer':      'https://gadget-gekiyasu.com',
