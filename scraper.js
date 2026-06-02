@@ -59,7 +59,9 @@ async function searchByGenre(genreId, label, page = 1) {
     const res = await axios.get(RAKUTEN_SEARCH_URL, {
       params,
       headers: {
-        'Referer': 'https://gadget-gekiyasu.com',  // 新仕様で必須
+        'Referer':       'https://gadget-gekiyasu.com',  // 新仕様で必須
+        'Authorization': `RakutenAuth applicationId=${process.env.RAKUTEN_APP_ID},accessKey=${process.env.RAKUTEN_ACCESS_KEY}`,
+        'Content-Type':  'application/json',
       },
       timeout: 15000,
     });
@@ -69,11 +71,18 @@ async function searchByGenre(genreId, label, page = 1) {
   } catch (err) {
     const status  = err.response?.status;
     const errBody = err.response?.data;
-    const errMsg  = errBody?.error_description || errBody?.error || err.message;
+    // レスポンスボディをそのまま出力（デバッグ用）
+    const errDetail = typeof errBody === 'string'
+      ? errBody.slice(0, 300)
+      : JSON.stringify(errBody ?? {}).slice(0, 300);
+    const errMsg = errBody?.error_description || errBody?.error || err.message;
     if (status === 404) {
       console.log(`  [${label}] ジャンルID ${genreId} は存在しません。スキップ`);
     } else {
       console.warn(`  [${label}] 取得失敗 HTTP${status ?? '?'}: ${errMsg}`);
+      if (status === 401 || status === 403) {
+        console.warn(`  [${label}] 認証エラー詳細: ${errDetail}`);
+      }
     }
     return [];
   }
