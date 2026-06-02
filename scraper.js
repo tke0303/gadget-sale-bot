@@ -80,9 +80,8 @@ async function searchByGenre(genreId, label, page = 1) {
       console.log(`  [${label}] ジャンルID ${genreId} は存在しません。スキップ`);
     } else {
       console.warn(`  [${label}] 取得失敗 HTTP${status ?? '?'}: ${errMsg}`);
-      if (status === 401 || status === 403) {
-        console.warn(`  [${label}] 認証エラー詳細: ${errDetail}`);
-      }
+      // 全エラーの詳細を出力
+      console.warn(`  [${label}] エラー詳細: ${errDetail}`);
     }
     return [];
   }
