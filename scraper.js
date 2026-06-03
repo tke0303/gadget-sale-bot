@@ -1,12 +1,12 @@
 /**
  * scraper.js  ─  楽天市場 API からガジェットセール商品を取得して返す
  *
- * 使用API: Rakuten IchibaItem/Search/20170706
+ * 使用API: Rakuten IchibaItem/Search/20220601 (2026-05-13〜新エンドポイント)
  *
  * 必須フィルタ:
  *   - レビュー件数 100件以上
  *   - 評価 4.0以上
- *   - 割引率 30%以上
+ *   - 割引率 20%以上（タイトルの「XX%OFF」から抽出 ─ API は割引フィールドを返さない）
  *
  * スコアリング: discountRate × log10(reviewCount + 1) × reviewAverage
  *   → 割引率が高く、レビューが多く、評価が高い商品を優先
@@ -22,38 +22,57 @@ const axios = require('axios');
 const RAKUTEN_SEARCH_URL =
   'https://openapi.rakuten.co.jp/ichibams/api/IchibaItem/Search/20220601';
 
-// ガジェット系ジャンルID（楽天市場）
+// ガジェット系ジャンルID（楽天市場 2026年版）
+// ※ "OFF"キーワードと組み合わせてセール品を検索
 const GADGET_GENRES = [
-  { id: '213310', label: 'AV・デジモノ'       },
-  { id: '560741', label: 'スマホ・タブレット'  },
-  { id: '101240', label: 'PC・周辺機器'        },
-  { id: '100433', label: 'カメラ・光学機器'    },
-  { id: '200162', label: 'イヤホン・ヘッドホン'},
+  { id: '211742', label: 'TV・オーディオ・カメラ' },  // 旧213310(0件)→修正
+  { id: '564500', label: 'スマホ・タブレット'      },  // 旧560741(404)→修正
+  { id: '100026', label: 'PC・周辺機器'            },  // 旧101240(誤分類)→修正
+  { id: '100433', label: 'カメラ・光学機器'        },  // 動作確認済み
+  { id: '200162', label: 'イヤホン・ヘッドホン'    },  // 動作確認済み
 ];
+
+// 割引率の最小しきい値（タイトルから抽出した値と比較）
+const MIN_DISCOUNT_RATE = 20;
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 /**
+ * 商品タイトルから割引率を抽出する
+ * 例: "超お得！50%OFF Bluetooth..." → 50
+ *     "3割引き 高評価..."          → 30  (「N割」も対応)
+ */
+function extractDiscountFromTitle(title) {
+  if (!title) return 0;
+  // "XX%OFF" / "XX% OFF" / "XX%オフ" / "XX%off"
+  const pctMatch = title.match(/(\d+)\s*%\s*(OFF|オフ|off)/i);
+  if (pctMatch) return parseInt(pctMatch[1], 10);
+  // "X割" / "X割引" (3割=30%, 5割=50%)
+  const wariMatch = title.match(/([1-9])\s*割/);
+  if (wariMatch) return parseInt(wariMatch[1], 10) * 10;
+  return 0;
+}
+
+/**
  * 楽天検索API呼び出し
- * ジャンルごとにレビュー数・評価でソートして取得
+ * keyword='OFF' を付けてセール品を優先的に取得
  */
 async function searchByGenre(genreId, label, page = 1) {
   // 新認証方式（2026-05-13〜）
   //   - applicationId / accessKey → クエリパラメータ
   //   - 検索条件                 → クエリパラメータ（GETリクエスト）
   //
-  // ⚠️ 重要: Referer と Origin は「楽天市場のURL」を設定する（自アプリURLではNG）
-  //   REQUEST_CONTEXT_BODY_HTTP_REFERRER_MISSING の正体は
-  //   "Rakuten のドメインからのリクエストとして認識させる" ことが必要なため。
-  //   参照: https://qiita.com/yamayoshi7/items/991f82dd9af8d7379a89
+  // ⚠️ Referer・Origin はアプリ登録URL（gadget-gekiyasu.com）を指定
+  //   Origin が欠けると REQUEST_CONTEXT_BODY_HTTP_REFERRER_MISSING になる
   const params = {
     applicationId: process.env.RAKUTEN_APP_ID,
     accessKey:     process.env.RAKUTEN_ACCESS_KEY,
     genreId,
+    keyword:       'OFF',            // "XX%OFF" の商品を優先取得
     hits:          30,
     page,
-    availability:  1,              // 在庫あり
-    sort:          '-reviewCount', // レビュー数降順
+    availability:  1,                // 在庫あり
+    sort:          '-reviewCount',   // レビュー数降順
     format:        'json',
   };
 
@@ -66,8 +85,6 @@ async function searchByGenre(genreId, label, page = 1) {
     const res = await axios.get(RAKUTEN_SEARCH_URL, {
       params,
       headers: {
-        // Developer Portal に登録したアプリURLと一致させる必要がある
-        // Origin を含めることで API がRefererを認識する（Originなしだと MISSING になる）
         'Referer':    'https://gadget-gekiyasu.com',
         'Origin':     'https://gadget-gekiyasu.com',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0',
@@ -101,15 +118,22 @@ function normalizeItem(raw) {
   const reviewCount   = raw.reviewCount   ?? 0;
   const reviewAverage = raw.reviewAverage ?? 0;
   const itemPrice     = raw.itemPrice     ?? 0;
-  const discountPrice = raw.discountPrice ?? 0;  // 0のとき未設定
-  const discountRate  = raw.discountRate  ?? 0;  // 0のとき未設定
+  // 楽天APIは discountPrice / discountRate を返さないケースが多い
+  const discountPrice = raw.discountPrice ?? 0;
+  const discountRate  = raw.discountRate  ?? 0;
 
-  // 割引率の確定: APIフィールドを優先、なければ価格から計算
+  // 割引率の確定:
+  //   1. APIフィールド（discountRate）
+  //   2. 価格差から計算（discountPrice > itemPrice）
+  //   3. 商品タイトルから "XX%OFF" を抽出（楽天では最も一般的）
   let finalDiscountRate = discountRate;
   let originalPrice     = discountPrice > 0 ? discountPrice : null;
 
   if (!finalDiscountRate && discountPrice > itemPrice) {
     finalDiscountRate = Math.round((1 - itemPrice / discountPrice) * 100);
+  }
+  if (!finalDiscountRate) {
+    finalDiscountRate = extractDiscountFromTitle(raw.itemName);
   }
 
   // スコア = 割引率 × log10(レビュー数+1) × 評価
@@ -143,8 +167,12 @@ function normalizeItem(raw) {
  */
 async function scrapeProducts() {
   console.log('\n  ▶ 楽天市場APIからガジェット商品を収集中...');
-  console.log(`  APP_ID: ${process.env.RAKUTEN_APP_ID ? '設定済 (' + process.env.RAKUTEN_APP_ID.slice(0, 8) + '...)' : '★未設定★'}`);
-  console.log(`  ACCESS_KEY: ${process.env.RAKUTEN_ACCESS_KEY ? '設定済 (' + process.env.RAKUTEN_ACCESS_KEY.length + '文字)' : '★未設定★'}`);
+  console.log(`  APP_ID: ${process.env.RAKUTEN_APP_ID
+    ? '設定済 (' + process.env.RAKUTEN_APP_ID.slice(0, 8) + '...)'
+    : '★未設定★'}`);
+  console.log(`  ACCESS_KEY: ${process.env.RAKUTEN_ACCESS_KEY
+    ? '設定済 (' + process.env.RAKUTEN_ACCESS_KEY.length + '文字)'
+    : '★未設定★'}`);
 
   const seen     = new Set();
   const rawItems = [];
@@ -161,12 +189,12 @@ async function scrapeProducts() {
         rawItems.push(item);
       }
     }
-    await sleep(1500); // API レート制限対策（新API: 429対応で間隔延長）
+    await sleep(1500); // API レート制限対策
   }
 
   console.log(`  API結果: 成功 ${successCount}件 / エラー ${errorCount}件`);
 
-  // 全ジャンルでエラーが発生した場合はワークフローを失敗させる（赤にする）
+  // 全ジャンルでエラーの場合はワークフローを失敗（赤）にする
   if (errorCount === GADGET_GENRES.length) {
     throw new Error(
       `楽天API: 全${GADGET_GENRES.length}ジャンルで取得失敗。` +
@@ -176,38 +204,21 @@ async function scrapeProducts() {
 
   console.log(`\n  収集合計: ${rawItems.length}件 → フィルタリング中...`);
 
-  // デバッグ: 先頭3件のフィールドを確認
-  if (rawItems.length > 0) {
-    console.log('  --- デバッグ: 先頭3件の価格・割引フィールド ---');
-    rawItems.slice(0, 3).forEach((r, i) => {
-      console.log(`  [${i}] itemPrice=${r.itemPrice} discountPrice=${r.discountPrice} discountRate=${r.discountRate} reviewCount=${r.reviewCount} reviewAverage=${r.reviewAverage} itemName=${String(r.itemName).slice(0, 30)}`);
-    });
-    console.log('  -----------------------------------------------');
-  }
-
   const products = [];
   for (const raw of rawItems) {
     const p = normalizeItem(raw);
 
     // 必須フィルタ①: レビュー100件以上
-    if (p.reviewCount < 100) {
-      continue;
-    }
+    if (p.reviewCount < 100) continue;
 
     // 必須フィルタ②: 評価4.0以上
-    if (p.rating < 4.0) {
-      continue;
-    }
+    if (p.rating < 4.0) continue;
 
-    // 必須フィルタ③: 割引率30%以上
-    if (p.discountRate < 30) {
-      continue;
-    }
+    // 必須フィルタ③: 割引率 MIN_DISCOUNT_RATE% 以上（タイトルから抽出）
+    if (p.discountRate < MIN_DISCOUNT_RATE) continue;
 
     // URL・価格が取れないものは除外
-    if (!p.url || p.currentPrice <= 0) {
-      continue;
-    }
+    if (!p.url || p.currentPrice <= 0) continue;
 
     products.push(p);
     console.log(
@@ -218,7 +229,8 @@ async function scrapeProducts() {
 
   // スコア降順でソート
   products.sort((a, b) => b.score - a.score);
-  console.log(`\n  合計 ${products.length} 件 (条件クリア: 割引30%+ / レビュー100件+ / 評価4.0+)`);
+  console.log(`\n  合計 ${products.length} 件` +
+    ` (条件クリア: 割引${MIN_DISCOUNT_RATE}%+ / レビュー100件+ / 評価4.0+)`);
   return products;
 }
 
