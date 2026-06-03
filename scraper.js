@@ -66,8 +66,10 @@ async function searchByGenre(genreId, label, page = 1) {
     const res = await axios.get(RAKUTEN_SEARCH_URL, {
       params,
       headers: {
-        'Referer':    'https://www.rakuten.co.jp/',
-        'Origin':     'https://www.rakuten.co.jp/',
+        // Developer Portal に登録したアプリURLと一致させる必要がある
+        // Origin を含めることで API がRefererを認識する（Originなしだと MISSING になる）
+        'Referer':    'https://gadget-gekiyasu.com',
+        'Origin':     'https://gadget-gekiyasu.com',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0',
       },
       timeout: 15000,
