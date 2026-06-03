@@ -39,38 +39,33 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
  */
 async function searchByGenre(genreId, label, page = 1) {
   // 新認証方式（2026-05-13〜）
-  //   - applicationId / accessKey → クエリパラメータ（必須）
-  //   - httpReferrer              → POSTボディの requestContext オブジェクト内
-  //   - 検索条件                  → POSTボディ（フラット）
-  const queryParams = new URLSearchParams({
+  //   - applicationId / accessKey / httpReferrer → クエリパラメータ
+  //   - 検索条件                                 → クエリパラメータ（GETリクエスト）
+  // ※旧APIはGET+クエリパラメータ方式。新APIも同様の可能性が高い。
+  //   httpReferrerをボディに入れると REQUEST_CONTEXT_BODY_HTTP_REFERRER_MISSING になるため
+  //   クエリパラメータで送信する。
+  const params = {
     applicationId: process.env.RAKUTEN_APP_ID,
     accessKey:     process.env.RAKUTEN_ACCESS_KEY,
-  });
-
-  // エラーコード REQUEST_CONTEXT_BODY_HTTP_REFERRER_MISSING の命名規則から
-  // httpReferrer は requestContext オブジェクト内に入れる必要がある
-  const body = {
-    requestContext: {
-      httpReferrer: 'https://gadget-gekiyasu.com',
-    },
+    httpReferrer:  'https://gadget-gekiyasu.com',
     genreId,
-    hits:         30,
+    hits:          30,
     page,
-    availability: 1,              // 在庫あり
-    sort:         '-reviewCount', // レビュー数降順
-    format:       'json',
+    availability:  1,              // 在庫あり
+    sort:          '-reviewCount', // レビュー数降順
+    format:        'json',
   };
 
   // アフィリエイトIDが設定されている場合のみ追加
   if (process.env.RAKUTEN_AFFILIATE_ID) {
-    body.affiliateId = process.env.RAKUTEN_AFFILIATE_ID;
+    params.affiliateId = process.env.RAKUTEN_AFFILIATE_ID;
   }
 
   try {
-    const res = await axios.post(`${RAKUTEN_SEARCH_URL}?${queryParams}`, body, {
+    const res = await axios.get(RAKUTEN_SEARCH_URL, {
+      params,
       headers: {
-        'Content-Type': 'application/json',
-        'Referer':      'https://gadget-gekiyasu.com',
+        'Referer': 'https://gadget-gekiyasu.com',
       },
       timeout: 15000,
     });
