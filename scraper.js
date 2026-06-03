@@ -176,6 +176,15 @@ async function scrapeProducts() {
 
   console.log(`\n  収集合計: ${rawItems.length}件 → フィルタリング中...`);
 
+  // デバッグ: 先頭3件のフィールドを確認
+  if (rawItems.length > 0) {
+    console.log('  --- デバッグ: 先頭3件の価格・割引フィールド ---');
+    rawItems.slice(0, 3).forEach((r, i) => {
+      console.log(`  [${i}] itemPrice=${r.itemPrice} discountPrice=${r.discountPrice} discountRate=${r.discountRate} reviewCount=${r.reviewCount} reviewAverage=${r.reviewAverage} itemName=${String(r.itemName).slice(0, 30)}`);
+    });
+    console.log('  -----------------------------------------------');
+  }
+
   const products = [];
   for (const raw of rawItems) {
     const p = normalizeItem(raw);
