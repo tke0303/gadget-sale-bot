@@ -40,15 +40,19 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 async function searchByGenre(genreId, label, page = 1) {
   // 新認証方式（2026-05-13〜）
   //   - applicationId / accessKey → クエリパラメータ（必須）
-  //   - httpReferrer              → リクエストボディ（POST）
-  //   - 検索条件                  → リクエストボディ（POST）
+  //   - httpReferrer              → POSTボディの requestContext オブジェクト内
+  //   - 検索条件                  → POSTボディ（フラット）
   const queryParams = new URLSearchParams({
     applicationId: process.env.RAKUTEN_APP_ID,
     accessKey:     process.env.RAKUTEN_ACCESS_KEY,
   });
 
+  // エラーコード REQUEST_CONTEXT_BODY_HTTP_REFERRER_MISSING の命名規則から
+  // httpReferrer は requestContext オブジェクト内に入れる必要がある
   const body = {
-    httpReferrer: 'https://gadget-gekiyasu.com',
+    requestContext: {
+      httpReferrer: 'https://gadget-gekiyasu.com',
+    },
     genreId,
     hits:         30,
     page,
@@ -72,23 +76,21 @@ async function searchByGenre(genreId, label, page = 1) {
     });
     const items = res.data?.Items ?? [];
     console.log(`  [${label}] ${items.length}件取得 (page ${page})`);
-    return items.map(i => i.Item ?? i);
+    return { items: items.map(i => i.Item ?? i), hadError: false };
   } catch (err) {
     const status  = err.response?.status;
     const errBody = err.response?.data;
-    // レスポンスボディをそのまま出力（デバッグ用）
     const errDetail = typeof errBody === 'string'
       ? errBody.slice(0, 300)
       : JSON.stringify(errBody ?? {}).slice(0, 300);
-    const errMsg = errBody?.error_description || errBody?.error || err.message;
+    const errMsg = errBody?.errors?.errorMessage || errBody?.error_description || errBody?.error || err.message;
     if (status === 404) {
       console.log(`  [${label}] ジャンルID ${genreId} は存在しません。スキップ`);
     } else {
       console.warn(`  [${label}] 取得失敗 HTTP${status ?? '?'}: ${errMsg}`);
-      // 全エラーの詳細を出力
       console.warn(`  [${label}] エラー詳細: ${errDetail}`);
     }
-    return [];
+    return { items: [], hadError: status !== 404 };
   }
 }
 
@@ -141,12 +143,18 @@ function normalizeItem(raw) {
  */
 async function scrapeProducts() {
   console.log('\n  ▶ 楽天市場APIからガジェット商品を収集中...');
+  console.log(`  APP_ID: ${process.env.RAKUTEN_APP_ID ? '設定済 (' + process.env.RAKUTEN_APP_ID.slice(0, 8) + '...)' : '★未設定★'}`);
+  console.log(`  ACCESS_KEY: ${process.env.RAKUTEN_ACCESS_KEY ? '設定済 (' + process.env.RAKUTEN_ACCESS_KEY.length + '文字)' : '★未設定★'}`);
 
   const seen     = new Set();
   const rawItems = [];
+  let errorCount   = 0;
+  let successCount = 0;
 
   for (const { id, label } of GADGET_GENRES) {
-    const items = await searchByGenre(id, label);
+    const { items, hadError } = await searchByGenre(id, label);
+    if (hadError) errorCount++;
+    else          successCount++;
     for (const item of items) {
       if (item.itemCode && !seen.has(item.itemCode)) {
         seen.add(item.itemCode);
@@ -154,6 +162,16 @@ async function scrapeProducts() {
       }
     }
     await sleep(1500); // API レート制限対策（新API: 429対応で間隔延長）
+  }
+
+  console.log(`  API結果: 成功 ${successCount}件 / エラー ${errorCount}件`);
+
+  // 全ジャンルでエラーが発生した場合はワークフローを失敗させる（赤にする）
+  if (errorCount === GADGET_GENRES.length) {
+    throw new Error(
+      `楽天API: 全${GADGET_GENRES.length}ジャンルで取得失敗。` +
+      `RAKUTEN_APP_ID / RAKUTEN_ACCESS_KEY を確認してください。`
+    );
   }
 
   console.log(`\n  収集合計: ${rawItems.length}件 → フィルタリング中...`);
