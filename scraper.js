@@ -39,15 +39,16 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
  */
 async function searchByGenre(genreId, label, page = 1) {
   // 新認証方式（2026-05-13〜）
-  //   - applicationId / accessKey / httpReferrer → クエリパラメータ
-  //   - 検索条件                                 → クエリパラメータ（GETリクエスト）
-  // ※旧APIはGET+クエリパラメータ方式。新APIも同様の可能性が高い。
-  //   httpReferrerをボディに入れると REQUEST_CONTEXT_BODY_HTTP_REFERRER_MISSING になるため
-  //   クエリパラメータで送信する。
+  //   - applicationId / accessKey → クエリパラメータ
+  //   - 検索条件                 → クエリパラメータ（GETリクエスト）
+  //
+  // ⚠️ 重要: Referer と Origin は「楽天市場のURL」を設定する（自アプリURLではNG）
+  //   REQUEST_CONTEXT_BODY_HTTP_REFERRER_MISSING の正体は
+  //   "Rakuten のドメインからのリクエストとして認識させる" ことが必要なため。
+  //   参照: https://qiita.com/yamayoshi7/items/991f82dd9af8d7379a89
   const params = {
     applicationId: process.env.RAKUTEN_APP_ID,
     accessKey:     process.env.RAKUTEN_ACCESS_KEY,
-    httpReferrer:  'https://gadget-gekiyasu.com',
     genreId,
     hits:          30,
     page,
@@ -65,7 +66,9 @@ async function searchByGenre(genreId, label, page = 1) {
     const res = await axios.get(RAKUTEN_SEARCH_URL, {
       params,
       headers: {
-        'Referer': 'https://gadget-gekiyasu.com',
+        'Referer':    'https://www.rakuten.co.jp/',
+        'Origin':     'https://www.rakuten.co.jp/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0',
       },
       timeout: 15000,
     });
