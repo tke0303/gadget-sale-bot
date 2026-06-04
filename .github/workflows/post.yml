@@ -59,7 +59,8 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull --rebase origin main
+          # --autostash: posted-items.json の変更を一時退避してからpull、その後復元
+          git pull --rebase --autostash origin main
           git add posted-items.json
           git diff --staged --quiet || git commit -m "chore: update posted items [skip ci]"
           git push
