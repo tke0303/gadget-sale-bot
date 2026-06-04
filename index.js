@@ -2,6 +2,7 @@ require('dotenv').config();
 const { scrapeProducts }               = require('./scraper');
 const { generateComment }              = require('./claude');
 const { postTweet }                    = require('./twitter');
+const { postThreads }                  = require('./threads');
 const { postArticle }                  = require('./wordpress');
 const { filterUnposted, markAsPosted } = require('./posted-items');
 
@@ -36,12 +37,24 @@ async function runTweetPost() {
   product.comment = await generateComment(product);
   console.log(`  コメント: ${product.comment}`);
 
-  console.log('\n[3/3] X(Twitter)に投稿中...');
-  await postTweet(product);
+  console.log('\n[3/3] X(Twitter) と Threads に同時投稿中...');
+  const [twitterResult, threadsResult] = await Promise.allSettled([
+    postTweet(product),
+    postThreads(product),
+  ]);
+
+  // X の失敗は致命的エラー（必須）
+  if (twitterResult.status === 'rejected') {
+    throw twitterResult.reason;
+  }
+  // Threads の失敗もエラーとして扱う（トークン設定済みの場合）
+  if (threadsResult.status === 'rejected') {
+    throw threadsResult.reason;
+  }
 
   // 投稿済みとして記録
   markAsPosted(product.itemCode);
-  console.log('✅ ツイート投稿成功！');
+  console.log('✅ 投稿完了！（X + Threads）');
 }
 
 // ── WordPress記事投稿（1日1回）──────────────────────────────────
