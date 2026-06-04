@@ -1,0 +1,55 @@
+name: Refresh Threads Token
+
+# Threads の長期アクセストークンは60日で失効するため
+# 毎週月曜 09:00 JST (00:00 UTC) に自動リフレッシュする
+#
+# 【事前準備】
+# PERSONAL_ACCESS_TOKEN (PAT) を GitHub Secrets に追加する必要があります
+#   1. GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens
+#   2. Repository permissions: "Secrets" → Read and write
+#   3. 作成したトークンを GitHub Secrets に PERSONAL_ACCESS_TOKEN として登録
+
+on:
+  schedule:
+    - cron: '0 0 * * 1'   # 毎週月曜 09:00 JST (00:00 UTC)
+  workflow_dispatch:       # 手動実行も可能
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Refresh Threads long-lived token
+        env:
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          GH_TOKEN:             ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        run: |
+          echo "Threads アクセストークンをリフレッシュ中..."
+
+          # Threads トークンリフレッシュ API を呼び出す
+          RESPONSE=$(curl -sf \
+            "https://graph.threads.net/refresh_access_token?grant_type=th_refresh_token&access_token=${THREADS_ACCESS_TOKEN}")
+
+          if [ $? -ne 0 ]; then
+            echo "❌ リフレッシュ API 呼び出し失敗"
+            echo "レスポンス: $RESPONSE"
+            exit 1
+          fi
+
+          NEW_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token // empty')
+          EXPIRES_IN=$(echo "$RESPONSE" | jq -r '.expires_in // "不明"')
+
+          if [ -z "$NEW_TOKEN" ]; then
+            echo "❌ トークンが取得できませんでした"
+            echo "レスポンス: $RESPONSE"
+            exit 1
+          fi
+
+          echo "✅ トークンリフレッシュ成功（有効期限: ${EXPIRES_IN}秒 ≈ 60日）"
+
+          # GitHub Secrets を新しいトークンで上書き
+          gh secret set THREADS_ACCESS_TOKEN \
+            --body "$NEW_TOKEN" \
+            --repo "${{ github.repository }}"
+
+          echo "✅ GitHub Secrets (THREADS_ACCESS_TOKEN) を更新しました"
