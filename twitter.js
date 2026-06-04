@@ -28,7 +28,7 @@ function getClient() {
  *   商品名（20文字）
  *
  *   ¥13,980 → ¥1,399（90%OFF）
- *   ⭐4.5（30,104件）
+ *   ⭐⭐⭐⭐4.5 🔥大人気
  *
  *   💁‍♂️ 一言コメント
  *
@@ -55,9 +55,19 @@ function buildTweetText(product) {
   }
 
   // 評価・レビュー行
-  const ratingLine = (product.rating && product.reviewCount)
-    ? `⭐${product.rating.toFixed(1)}（${product.reviewCount.toLocaleString()}件）`
-    : '';
+  // 星: floor(rating) 個の⭐ + 数値   例) 4.5 → ⭐⭐⭐⭐4.5
+  // レビュー数ラベル: 10,000件以上→🔥大人気 / 1,000件以上→👍人気 / 100件以上→表示なし
+  let ratingLine = '';
+  if (product.rating && product.reviewCount) {
+    const stars = '⭐'.repeat(Math.floor(product.rating));
+    let popularTag = '';
+    if (product.reviewCount >= 10000) {
+      popularTag = ' 🔥大人気';
+    } else if (product.reviewCount >= 1000) {
+      popularTag = ' 👍人気';
+    }
+    ratingLine = `${stars}${product.rating.toFixed(1)}${popularTag}`;
+  }
 
   // コメントは最大30文字
   let commentLine = '';
