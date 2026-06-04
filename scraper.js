@@ -68,7 +68,8 @@ async function searchByGenre(genreId, label, page = 1) {
     applicationId: process.env.RAKUTEN_APP_ID,
     accessKey:     process.env.RAKUTEN_ACCESS_KEY,
     genreId,
-    keyword:       'OFF',            // "XX%OFF" の商品を優先取得
+    // keyword は指定しない（指定するとジャンル外商品が混入するため）
+    // 割引品の検出はタイトルの "XX%OFF" 抽出で行う
     hits:          30,
     page,
     availability:  1,                // 在庫あり
