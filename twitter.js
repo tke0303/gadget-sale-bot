@@ -10,110 +10,98 @@ function getClient() {
   });
 }
 
+/**
+ * ツイート本文を組み立てる
+ *
+ * Twitter の文字数カウント:
+ *   - 通常文字: 1文字 = 1カウント
+ *   - 全角文字: 1文字 = 1カウント (Twitterは全角も1)
+ *   - URL: 長さに関わらず 23 カウント (t.co 変換)
+ *   - 上限: 280
+ *
+ * 構成:
+ *   タイトル(最大30文字) + 価格 + 評価 + コメント(最大20文字) + URL + ハッシュタグ
+ *   実測 ≈ 140〜200カウント (URLは23カウント換算)
+ */
 function buildTweetText(product) {
-  const title = product.title.length > 50
-    ? product.title.slice(0, 50) + '…'
+  // タイトルは全角30文字まで（長すぎると文字数オーバー）
+  const title = product.title.length > 30
+    ? product.title.slice(0, 30) + '…'
     : product.title;
 
+  // 価格表示
   let priceLine;
   if (product.currentPrice && product.originalPrice) {
     priceLine =
-      `¥${product.originalPrice.toLocaleString()} → ` +
-      `¥${product.currentPrice.toLocaleString()}（${product.discountRate}%OFF）`;
+      `¥${product.originalPrice.toLocaleString()}→¥${product.currentPrice.toLocaleString()}` +
+      `（${product.discountRate}%OFF）`;
   } else if (product.currentPrice) {
     priceLine = `¥${product.currentPrice.toLocaleString()}（${product.discountRate}%OFF）`;
   } else {
     priceLine = `${product.discountRate}%OFF 🎉`;
   }
 
+  // 評価・レビュー行
   const ratingLine = (product.rating && product.reviewCount)
     ? `⭐${product.rating.toFixed(1)}（${product.reviewCount.toLocaleString()}件）`
     : '';
 
-  const commentLine = product.comment ? `\n💁‍♂️「${product.comment}」` : '';
+  // コメントは最大20文字
+  let commentLine = '';
+  if (product.comment) {
+    const c = product.comment.length > 20
+      ? product.comment.slice(0, 20) + '…'
+      : product.comment;
+    commentLine = `💁‍♂️${c}`;
+  }
 
-  return (
-    `【🔥ガジェットセール】\n` +
-    `${title}\n\n` +
-    `${priceLine}\n` +
-    (ratingLine ? `${ratingLine}\n` : '') +
-    `${commentLine}\n\n` +
-    `👇 楽天で見る\n` +
-    `${product.url}\n\n` +
-    `#楽天 #ガジェット #セール #広告`
-  );
+  const lines = [
+    `【🔥楽天セール】`,
+    title,
+    ``,
+    priceLine,
+    ratingLine,
+    commentLine,
+    ``,
+    `👉 ${product.url}`,
+    ``,
+    `#楽天 #セール #ガジェット`,
+  ].filter(l => l !== null && l !== undefined);
+
+  return lines.join('\n');
 }
 
 async function postTweet(product) {
   const client = getClient();
 
-  // ── デバッグ: 認証情報の確認 ──────────────────────────────────
-  const apiKey       = process.env.TWITTER_API_KEY       || '';
-  const apiSecret    = process.env.TWITTER_API_SECRET    || '';
-  const accessToken  = process.env.TWITTER_ACCESS_TOKEN  || '';
-  const accessSecret = process.env.TWITTER_ACCESS_TOKEN_SECRET || '';
-
-  console.log('--- Twitter認証デバッグ ---');
-  console.log(`TWITTER_API_KEY       : ${apiKey    ? apiKey.slice(0,6)    + '...(長さ:' + apiKey.length    + ')' : '★未設定★'}`);
-  console.log(`TWITTER_API_SECRET    : ${apiSecret ? apiSecret.slice(0,6) + '...(長さ:' + apiSecret.length + ')' : '★未設定★'}`);
-  console.log(`TWITTER_ACCESS_TOKEN  : ${accessToken  ? accessToken.slice(0,8)  + '...(長さ:' + accessToken.length  + ')' : '★未設定★'}`);
-  console.log(`TWITTER_ACCESS_SECRET : ${accessSecret ? accessSecret.slice(0,6) + '...(長さ:' + accessSecret.length + ')' : '★未設定★'}`);
-
-  // ACCESS_TOKEN の数字部分を確認（例: "1234567890-xxxxx"）
-  const tokenUserId = accessToken.split('-')[0];
-  console.log(`ACCESS_TOKEN ユーザーID部分: ${tokenUserId}`);
-
-  // ── ステップ1: 読み取りテスト（v2.me）で認証を確認 ──────────
-  console.log('\n[認証テスト] v2.me() で認証確認中...');
-  try {
-    const me = await client.readWrite.v2.me();
-    console.log(`[認証テスト] ✅ 成功: @${me.data.username} (id: ${me.data.id})`);
-  } catch (meErr) {
-    console.warn(`[認証テスト] ❌ 失敗: ${meErr.code} - ${meErr.data?.detail || meErr.message}`);
-    console.warn(`[認証テスト]    title: ${meErr.data?.title || 'N/A'}`);
-  }
+  // 認証情報の確認ログ（先頭数文字のみ表示）
+  const ak  = process.env.TWITTER_API_KEY            || '';
+  const at  = process.env.TWITTER_ACCESS_TOKEN       || '';
+  console.log(`Twitter API_KEY 先頭: ${ak.slice(0,6)}... (${ak.length}文字)`);
+  console.log(`Twitter ACCESS_TOKEN 先頭: ${at.slice(0,10)}... (${at.length}文字)`);
 
   const text = buildTweetText(product);
   console.log('\n投稿内容:\n' + text);
-  console.log(`\n文字数（参考）: ${text.length}文字`);
+  console.log(`\n文字数（raw）: ${text.length} / URLを23換算した実効カウント参考値`);
 
-  // ── ステップ2: v2 API でツイート ──────────────────────────────
-  console.log('\n[v2] POST /2/tweets で投稿試行...');
+  // v2 API でツイート投稿
   try {
     const result = await client.readWrite.v2.tweet(text);
-    console.log(`[v2] ✅ 投稿成功！ tweet_id: ${result.data?.id}`);
-    return;
-  } catch (v2Err) {
-    console.warn(`[v2] ❌ 失敗: HTTP ${v2Err.code}`);
-    console.warn(`[v2]    title  : ${v2Err.data?.title || 'N/A'}`);
-    console.warn(`[v2]    detail : ${v2Err.data?.detail || 'N/A'}`);
-    if (v2Err.data?.errors) {
-      console.warn(`[v2]    errors : ${JSON.stringify(v2Err.data.errors)}`);
-    }
-    // 403の場合はv1にフォールバック
-    if (v2Err.code !== 403 && v2Err.code !== 401) throw v2Err;
-    console.warn('[v2] → v1.1 フォールバックを試みます...');
-  }
+    console.log(`✅ 投稿成功！ tweet_id: ${result.data?.id}`);
+  } catch (err) {
+    // 詳細なエラー情報を出力
+    console.error(`Twitter投稿失敗 HTTP ${err.code}: ${err.data?.title}`);
+    console.error(`  detail : ${err.data?.detail}`);
+    if (err.data?.errors) console.error(`  errors : ${JSON.stringify(err.data.errors)}`);
 
-  // ── ステップ3: v1.1 API にフォールバック ─────────────────────
-  console.log('\n[v1.1] POST statuses/update.json で投稿試行...');
-  try {
-    const result = await client.readWrite.v1.tweet(text);
-    console.log(`[v1.1] ✅ 投稿成功！ tweet_id: ${result.id_str}`);
-    return;
-  } catch (v1Err) {
-    console.error(`[v1.1] ❌ 失敗: HTTP ${v1Err.code}`);
-    console.error(`[v1.1]    title  : ${v1Err.data?.title || 'N/A'}`);
-    console.error(`[v1.1]    detail : ${v1Err.data?.detail || 'N/A'}`);
-    if (v1Err.data?.errors) {
-      console.error(`[v1.1]    errors : ${JSON.stringify(v1Err.data.errors)}`);
+    if (err.code === 403) {
+      console.error('');
+      console.error('【403エラーの対処法】');
+      console.error('Access Token が Read-only で生成されている可能性があります。');
+      console.error('Twitter Developer Portal → Keys and Tokens →');
+      console.error('「Access Token and Secret」の Regenerate を実行してください。');
     }
-    // v2 と v1.1 両方失敗したらそれぞれのエラーを添えてスロー
-    throw new Error(
-      `Twitter投稿失敗（v2 & v1.1 両方エラー）\n` +
-      `v2: ${v1Err.code} ${v1Err.data?.detail || v1Err.message}\n` +
-      `→ Twitter Developer Portal で「Access Token and Secret」を再生成してください`
-    );
+    throw err;
   }
 }
 
