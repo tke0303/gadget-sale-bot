@@ -20,20 +20,33 @@ function getClient() {
  *   - 上限: 280
  *
  * 構成:
- *   タイトル(最大30文字) + 価格 + 評価 + コメント(最大20文字) + URL + ハッシュタグ
- *   実測 ≈ 140〜200カウント (URLは23カウント換算)
+ *   タイトル(最大20文字) + 価格 + 評価 + コメント(最大30文字) + URL + ハッシュタグ
+ *   実測 ≈ 130〜150カウント (URLは23カウント換算)
+ *
+ * フォーマット例:
+ *   【🔥楽天セール】
+ *   商品名（20文字）
+ *
+ *   ¥13,980 → ¥1,399（90%OFF）
+ *   ⭐4.5（30,104件）
+ *
+ *   💁‍♂️ 一言コメント
+ *
+ *   👉 URL
+ *
+ *   #楽天 #セール #ガジェット #広告
  */
 function buildTweetText(product) {
-  // タイトルは全角30文字まで（長すぎると文字数オーバー）
-  const title = product.title.length > 30
-    ? product.title.slice(0, 30) + '…'
+  // タイトルは全角20文字まで
+  const title = product.title.length > 20
+    ? product.title.slice(0, 20) + '…'
     : product.title;
 
-  // 価格表示
+  // 価格表示: 元値 → 現在値（XX%OFF）
   let priceLine;
   if (product.currentPrice && product.originalPrice) {
     priceLine =
-      `¥${product.originalPrice.toLocaleString()}→¥${product.currentPrice.toLocaleString()}` +
+      `¥${product.originalPrice.toLocaleString()} → ¥${product.currentPrice.toLocaleString()}` +
       `（${product.discountRate}%OFF）`;
   } else if (product.currentPrice) {
     priceLine = `¥${product.currentPrice.toLocaleString()}（${product.discountRate}%OFF）`;
@@ -46,13 +59,13 @@ function buildTweetText(product) {
     ? `⭐${product.rating.toFixed(1)}（${product.reviewCount.toLocaleString()}件）`
     : '';
 
-  // コメントは最大20文字
+  // コメントは最大30文字
   let commentLine = '';
   if (product.comment) {
-    const c = product.comment.length > 20
-      ? product.comment.slice(0, 20) + '…'
+    const c = product.comment.length > 30
+      ? product.comment.slice(0, 30) + '…'
       : product.comment;
-    commentLine = `💁‍♂️${c}`;
+    commentLine = `💁‍♂️ ${c}`;
   }
 
   const lines = [
@@ -61,11 +74,12 @@ function buildTweetText(product) {
     ``,
     priceLine,
     ratingLine,
+    ``,
     commentLine,
     ``,
     `👉 ${product.url}`,
     ``,
-    `#楽天 #セール #ガジェット`,
+    `#楽天 #セール #ガジェット #広告`,
   ].filter(l => l !== null && l !== undefined);
 
   return lines.join('\n');
