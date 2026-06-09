@@ -58,4 +58,33 @@ async function generateArticleIntro(products) {
   return message.content[0].text.trim();
 }
 
-module.exports = { generateComment, generateArticleIntro };
+/**
+ * SNS投稿文を生成する（X/Threads用・2〜3行・60〜80文字）
+ * 商品名・価格・星評価は文中に含めず、実体験風・共感を呼ぶ文体で生成する
+ */
+async function generateSNSPost(product) {
+  const prompt =
+    `以下の商品情報をもとに、SNSで思わずクリックしたくなる\n` +
+    `投稿文を2〜3行で書いてください。\n\n` +
+    `条件：\n` +
+    `・商品名・価格・星評価は文中に含めない\n` +
+    `・実体験風・共感を呼ぶ文体\n` +
+    `・「〜した人に聞いたら」「〜してる人が多い」「〜なのが神」のような自然な口語表現\n` +
+    `・60〜80文字以内\n` +
+    `・毎回違う切り口で生成\n` +
+    `・投稿文のみ出力（前置き・説明不要）\n\n` +
+    `商品名: ${product.title}\n` +
+    `評価: ⭐${product.rating?.toFixed(1)}（${product.reviewCount?.toLocaleString()}件レビュー）\n` +
+    `価格: ¥${product.currentPrice?.toLocaleString()}\n` +
+    `カテゴリ: ガジェット`;
+
+  const message = await client.messages.create({
+    model:      'claude-haiku-4-5-20251001',
+    max_tokens: 150,
+    messages:   [{ role: 'user', content: prompt }],
+  });
+
+  return message.content[0].text.trim();
+}
+
+module.exports = { generateComment, generateArticleIntro, generateSNSPost };

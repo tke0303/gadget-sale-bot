@@ -11,88 +11,28 @@ function getClient() {
 }
 
 /**
- * ツイート本文を組み立てる
+ * 投稿本文を組み立てる
  *
- * Twitter の文字数カウント:
- *   - 通常文字: 1文字 = 1カウント
- *   - 全角文字: 1文字 = 1カウント (Twitterは全角も1)
+ * フォーマット:
+ *   {Claudeが生成した2〜3行の投稿文}
+ *
+ *   {楽天アフィリエイトリンク}
+ *
+ *   #楽天 #ガジェット #おすすめ #広告
+ *
+ * Twitter文字数カウント:
  *   - URL: 長さに関わらず 23 カウント (t.co 変換)
  *   - 上限: 280
- *
- * 構成:
- *   タイトル(最大20文字) + 価格 + 評価 + コメント(最大30文字) + URL + ハッシュタグ
- *   実測 ≈ 130〜150カウント (URLは23カウント換算)
- *
- * フォーマット例:
- *   【🔥楽天セール】
- *   商品名（20文字）
- *
- *   ¥13,980 → ¥1,399（90%OFF）
- *   ⭐⭐⭐⭐4.5 🔥大人気
- *
- *   💁‍♂️ 一言コメント
- *
- *   👉 URL
- *
- *   #楽天 #セール #ガジェット #広告
+ *   - 投稿文60〜80字 + URL23 + ハッシュタグ15 ≈ 100〜120カウント
  */
 function buildTweetText(product) {
-  // タイトルは全角20文字まで
-  const title = product.title.length > 20
-    ? product.title.slice(0, 20) + '…'
-    : product.title;
-
-  // 価格表示: 元値 → 現在値（XX%OFF）
-  let priceLine;
-  if (product.currentPrice && product.originalPrice) {
-    priceLine =
-      `¥${product.originalPrice.toLocaleString()} → ¥${product.currentPrice.toLocaleString()}` +
-      `（${product.discountRate}%OFF）`;
-  } else if (product.currentPrice) {
-    priceLine = `¥${product.currentPrice.toLocaleString()}（${product.discountRate}%OFF）`;
-  } else {
-    priceLine = `${product.discountRate}%OFF 🎉`;
-  }
-
-  // 評価・レビュー行
-  // 星: floor(rating) 個の⭐ + 数値   例) 4.5 → ⭐⭐⭐⭐4.5
-  // レビュー数ラベル: 10,000件以上→🔥大人気 / 1,000件以上→👍人気 / 100件以上→表示なし
-  let ratingLine = '';
-  if (product.rating && product.reviewCount) {
-    const stars = '⭐'.repeat(Math.floor(product.rating));
-    let popularTag = '';
-    if (product.reviewCount >= 10000) {
-      popularTag = ' 🔥大人気';
-    } else if (product.reviewCount >= 1000) {
-      popularTag = ' 👍人気';
-    }
-    ratingLine = `${stars}${product.rating.toFixed(1)}${popularTag}`;
-  }
-
-  // コメントは最大30文字
-  let commentLine = '';
-  if (product.comment) {
-    const c = product.comment.length > 30
-      ? product.comment.slice(0, 30) + '…'
-      : product.comment;
-    commentLine = `💁‍♂️ ${c}`;
-  }
-
-  const lines = [
-    `【🔥楽天セール】`,
-    title,
-    ``,
-    priceLine,
-    ratingLine,
-    ``,
-    commentLine,
-    ``,
-    `👉 ${product.url}`,
-    ``,
-    `#楽天 #セール #ガジェット #広告`,
-  ].filter(l => l !== null && l !== undefined);
-
-  return lines.join('\n');
+  return [
+    product.comment,
+    '',
+    product.url,
+    '',
+    '#楽天 #ガジェット #おすすめ #広告',
+  ].join('\n');
 }
 
 async function postTweet(product) {
