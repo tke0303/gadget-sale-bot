@@ -87,4 +87,67 @@ async function generateSNSPost(product) {
   return message.content[0].text.trim();
 }
 
-module.exports = { generateComment, generateArticleIntro, generateSNSPost };
+/**
+ * 商品レビュー記事の全セクションを生成する（WordPress投稿用）
+ * JSON形式で返す:
+ *   titleSuffix, intro, appeals[3], recommends[3], scenes[2], push, summary
+ */
+async function generateProductArticle(product) {
+  const discountInfo = product.discountRate
+    ? `- 割引率: ${product.discountRate}%オフ${product.originalPrice ? `（定価¥${product.originalPrice.toLocaleString()}）` : ''}\n`
+    : '';
+
+  const prompt =
+    `あなたは楽天市場商品の本音レビューを書くブロガーです。\n` +
+    `以下の商品についてWordPressブログ記事の本文を生成してください。\n\n` +
+    `【商品情報】\n` +
+    `商品名: ${product.title}\n` +
+    `現在価格: ¥${product.currentPrice?.toLocaleString()}\n` +
+    discountInfo +
+    `評価: ⭐${product.rating?.toFixed(1)}（${product.reviewCount?.toLocaleString()}件レビュー）\n\n` +
+    `【出力形式】\n` +
+    `JSONのみ出力してください（コードブロック・前置き不要）:\n\n` +
+    `{\n` +
+    `  "titleSuffix": "この商品の魅力を一言で（15字以内）",\n` +
+    `  "intro": "「[悩み・用途]で悩んでいませんか？」から始まる共感的な導入文（100字程度）",\n` +
+    `  "appeals": [\n` +
+    `    { "title": "魅力ポイント1の見出し（20字以内）", "body": "体験談風の説明（150字程度・改行\\nを使い読みやすく）" },\n` +
+    `    { "title": "魅力ポイント2の見出し（20字以内）", "body": "体験談風の説明（150字程度・改行\\nを使い読みやすく）" },\n` +
+    `    { "title": "魅力ポイント3の見出し（20字以内）", "body": "体験談風の説明（150字程度・改行\\nを使い読みやすく）" }\n` +
+    `  ],\n` +
+    `  "recommends": [\n` +
+    `    "こんな人におすすめ1（25字程度）",\n` +
+    `    "こんな人におすすめ2（25字程度）",\n` +
+    `    "こんな人におすすめ3（25字程度）"\n` +
+    `  ],\n` +
+    `  "scenes": [\n` +
+    `    { "title": "使用シーン1の見出し（20字以内）", "body": "具体的な場面描写（100字程度）" },\n` +
+    `    { "title": "使用シーン2の見出し（20字以内）", "body": "具体的な場面描写（100字程度）" }\n` +
+    `  ],\n` +
+    `  "push": "購入を後押しするひと言（40字程度）",\n` +
+    `  "summary": "まとめの文章（100字程度・ですます調）"\n` +
+    `}\n\n` +
+    `【文体の条件】\n` +
+    `・人間が書いたような自然なですます体\n` +
+    `・AI感・テンプレ感のない文体\n` +
+    `・実体験風・具体的な描写\n` +
+    `・読者目線・共感を大切に`;
+
+  const message = await client.messages.create({
+    model:      'claude-haiku-4-5-20251001',
+    max_tokens: 2000,
+    messages:   [{ role: 'user', content: prompt }],
+  });
+
+  const text     = message.content[0].text.trim();
+  const jsonText = text.replace(/^```(?:json)?\n?|\n?```$/g, '').trim();
+
+  try {
+    return JSON.parse(jsonText);
+  } catch (e) {
+    console.error('JSONパース失敗。レスポンス先頭:', text.slice(0, 300));
+    throw new Error(`記事データのJSONパースに失敗しました: ${e.message}`);
+  }
+}
+
+module.exports = { generateComment, generateArticleIntro, generateSNSPost, generateProductArticle };
