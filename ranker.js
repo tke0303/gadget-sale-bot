@@ -17,12 +17,18 @@
 require('dotenv').config();
 const axios = require('axios');
 
-const RAKUTEN_RANKING_URL =
-  'https://openapi.rakuten.co.jp/ichibams/api/IchibaItem/Ranking/20220601';
+// ランキングAPIが利用不可のため Search API でレビュー数降順取得
+// sort='-reviewCount' でレビュー数が多い人気商品を取得する
+const RAKUTEN_SEARCH_URL =
+  'https://openapi.rakuten.co.jp/ichibams/api/IchibaItem/Search/20220601';
 
-// ランキングAPIはSearch APIと異なるジャンルID空間を持つため
-// genreId: 0（全カテゴリ総合）で3ページ取得して商品プールを確保する
-const RANKING_PAGES = [1, 2, 3]; // 各30件 → 最大90件
+const GADGET_GENRES = [
+  { id: '211742', label: 'TV・オーディオ・カメラ' },
+  { id: '564500', label: 'スマホ・タブレット'      },
+  { id: '100026', label: 'PC・周辺機器'            },
+  { id: '100433', label: 'カメラ・光学機器'        },
+  { id: '200162', label: 'イヤホン・ヘッドホン'    },
+];
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -37,16 +43,18 @@ function shuffle(arr) {
 }
 
 /**
- * ランキングAPI呼び出し（総合ランキング・指定ページ）
+ * Search API でレビュー数降順（人気順）取得
+ * discountフィルタなし・割引率問わず人気商品を対象にする
  */
-async function fetchRanking(page) {
+async function fetchPopular(genreId, label) {
   const params = {
     applicationId: process.env.RAKUTEN_APP_ID,
     accessKey:     process.env.RAKUTEN_ACCESS_KEY,
-    genreId:       0,      // 全カテゴリ総合
+    genreId,
     hits:          30,
-    page,
-    period:        'weekly',
+    page:          1,
+    availability:  1,
+    sort:          '-reviewCount',  // レビュー数降順 = 人気順
     format:        'json',
   };
   if (process.env.RAKUTEN_AFFILIATE_ID) {
@@ -54,7 +62,7 @@ async function fetchRanking(page) {
   }
 
   try {
-    const res = await axios.get(RAKUTEN_RANKING_URL, {
+    const res = await axios.get(RAKUTEN_SEARCH_URL, {
       params,
       headers: {
         'Referer':    'https://gadget-gekiyasu.com',
@@ -64,15 +72,18 @@ async function fetchRanking(page) {
       timeout: 15000,
     });
     const items = res.data?.Items ?? [];
-    console.log(`  [総合ランキング page${page}] ${items.length}件取得`);
+    console.log(`  [${label}] ${items.length}件取得`);
     return { items: items.map(i => i.Item ?? i), hadError: false };
   } catch (err) {
     const status  = err.response?.status;
     const errBody = err.response?.data;
     const errMsg  = errBody?.errors?.errorMessage || errBody?.error_description || errBody?.error || err.message;
-    console.warn(`  [総合ランキング page${page}] 取得失敗 HTTP${status ?? '?'}: ${errMsg}`);
-    console.warn(`  詳細: ${JSON.stringify(errBody ?? {}).slice(0, 200)}`);
-    return { items: [], hadError: true };
+    if (status === 404) {
+      console.log(`  [${label}] ジャンルID ${genreId} は存在しません。スキップ`);
+    } else {
+      console.warn(`  [${label}] 取得失敗 HTTP${status ?? '?'}: ${errMsg}`);
+    }
+    return { items: [], hadError: status !== 404 };
   }
 }
 
@@ -93,10 +104,10 @@ function normalizeItem(raw) {
 }
 
 /**
- * メイン: 総合ランキング3ページを収集 → フィルタ → シャッフルして返す
+ * メイン: 全ジャンルの人気商品を収集 → フィルタ → シャッフルして返す
  */
 async function getRankedProducts() {
-  console.log('\n  ▶ 楽天市場ランキングAPIから人気商品を収集中（総合・週間）...');
+  console.log('\n  ▶ 楽天市場から人気ガジェット商品を収集中（レビュー数降順）...');
   console.log(`  APP_ID: ${process.env.RAKUTEN_APP_ID
     ? '設定済 (' + process.env.RAKUTEN_APP_ID.slice(0, 8) + '...)'
     : '★未設定★'}`);
@@ -106,8 +117,8 @@ async function getRankedProducts() {
   let errorCount   = 0;
   let successCount = 0;
 
-  for (const page of RANKING_PAGES) {
-    const { items, hadError } = await fetchRanking(page);
+  for (const { id, label } of GADGET_GENRES) {
+    const { items, hadError } = await fetchPopular(id, label);
     if (hadError) errorCount++;
     else          successCount++;
     for (const item of items) {
@@ -119,11 +130,11 @@ async function getRankedProducts() {
     await sleep(1000);
   }
 
-  console.log(`  API結果: 成功 ${successCount}ページ / エラー ${errorCount}ページ`);
+  console.log(`  API結果: 成功 ${successCount}件 / エラー ${errorCount}件`);
 
-  if (successCount === 0) {
+  if (errorCount === GADGET_GENRES.length) {
     throw new Error(
-      `楽天ランキングAPI: 全ページで取得失敗。` +
+      `楽天API: 全${GADGET_GENRES.length}ジャンルで取得失敗。` +
       `RAKUTEN_APP_ID / RAKUTEN_ACCESS_KEY を確認してください。`
     );
   }
